@@ -39,12 +39,21 @@ API.service.jct = {}
 # but also will be directly routed from a dedicated domain, so that service/jct/ will 
 # be unnecessary from that domain (and it will be routed via cloudlfare for caching too)
 API.add 'service/jct', 
-  get: () -> return API.service.jct.calculate this.queryParams
+  get: 
+    () ->
+      if _.isEmpty this.queryParams
+        return 'cOAlition S Journal Checker Tool. Service provided by Cottage Labs LLP. Contact us@cottagelabs.com'
+      else
+        return API.service.jct.calculate this.queryParams
   post: () -> return API.service.jct.calculate this.bodyParams
 API.add 'service/jct/calculate', 
   get: () -> return API.service.jct.calculate this.queryParams
   post: () -> return API.service.jct.calculate this.bodyParams
-API.add 'service/jct/import', get: () -> return API.service.jct.import this.queryParams
+API.add 'service/jct/import', 
+  get: () -> 
+    Meteor.setTimeout (() => API.service.jct.import this.queryParams), 1
+    return true
+
 
 # these should also be cached via cloudflare or similar, so that over time we build known lists of suggestions
 # (and can preload them by sending requests to these endpoints with a range of starting characters)
@@ -58,8 +67,15 @@ API.add 'service/jct/journal', () -> return academic_journal.search this # shoul
 API.add 'service/jct/funder', 
   csv: true
   get: () -> return API.service.jct.funders undefined, this.queryParams.refresh
+API.add 'service/jct/funders', 
+  csv: true
+  get: () -> return API.service.jct.funders undefined, this.queryParams.refresh
 API.add 'service/jct/institution', get: () -> return [] # return a total list of all the institutions we know? Any more use than the suggest route?
+API.add 'service/jct/institutions', get: () -> return [] # return a total list of all the institutions we know? Any more use than the suggest route?
 API.add 'service/jct/publisher', 
+  csv: true
+  get: () -> return API.service.jct._publishers
+API.add 'service/jct/publishers', 
   csv: true
   get: () -> return API.service.jct._publishers
 #API.add 'service/jct/publisher/:pid/journals', get: () -> return [] # list all journals we know of for a given publisher name or ID?
@@ -109,7 +125,10 @@ API.add 'service/jct/ta/agreements/:aid',
 API.add 'service/jct/ta/esac', # convenience for getting esac data from their web page, but not actually our direct source of TA data
   csv: true
   get: () -> return API.service.jct.ta.esac undefined, this.queryParams.refresh
-API.add 'service/jct/ta/import', get: () -> return API.service.jct.ta.import()
+API.add 'service/jct/ta/import', 
+  get: () -> 
+    Meteor.setTimeout (() => API.service.jct.ta.import()), 1
+    return true
 
 API.add 'service/jct/tj', # allow dump of all TJ?
   csv: true
@@ -124,7 +143,7 @@ API.add 'service/jct/doaj/:issn', get: () -> return API.service.jct.doaj this.ur
 API.add 'service/jct/permission', get: () -> return API.service.jct.permission this.queryParams.issn
 API.add 'service/jct/permission/:issn', get: () -> return API.service.jct.permission this.urlParams.issn
 
-API.add 'service/jct/retention', get: () -> return API.service.jct.retention this.queryParams.issn
+API.add 'service/jct/retention', get: () -> return API.service.jct.retention this.queryParams.issn, this.queryParams.refresh
 API.add 'service/jct/retention/:issn', get: () -> return API.service.jct.retention this.urlParams.issn
 
 API.add 'service/jct/feedback',
@@ -132,7 +151,7 @@ API.add 'service/jct/feedback',
   post: () -> return API.service.jct.feedback this.bodyParams
 
 API.add 'service/jct/examples', get: () -> return API.service.jct.examples()
-API.add 'service/jct/test', get: () -> return API.service.jct.test()
+API.add 'service/jct/test', get: () -> return API.service.jct.test this.queryParams
 
 
 
@@ -154,13 +173,14 @@ API.service.jct.suggest = (which='journal', q, from, size) ->
     res = []
     for f in API.service.jct.funders()
       matches = true
-      for q in (if q then q.toLowerCase().split(' ') else []) # will this need to handle matching special chars?
-        if q not in ['of','the','and'] and f.funder.toLowerCase().indexOf(q) is -1
-          matches = false
+      if q isnt f.id
+        for q in (if q then q.toLowerCase().split(' ') else []) # will this need to handle matching special chars?
+          if q not in ['of','the','and'] and f.funder.toLowerCase().indexOf(q) is -1
+            matches = false
       res.push({title: f.funder, id: f.id}) if matches
     return total: res.length, data: res
-  else if which is 'institution'
-    # this could instead be allowed to go through to academic institution search for much larger coverage
+  else if false #which is 'institution'
+    # this can instead be allowed to go through to academic institution search for much larger coverage
     # here we only provide institution names if they are present in the current TAs we know about
     res = []
     for f in API.service.jct.ta.institution()
@@ -216,28 +236,52 @@ API.service.jct.compliance = (funder, journal, institution, refresh=86400000, no
 API.service.jct.calculate = (params={}, refresh, checks=['permission', 'doaj', 'ta', 'tj'], retention=false) -> # TODO change retention to true when ready
   # given funder(s), journal(s), institution(s), find out if compliant or not
   # note could be given lists of each - if so, calculate all and return a list
-  rq = Random.id() # random ID to store with the cached results, to measure number of unique requests that aggregate multiple sets of entities
-  started = Date.now()
-  if params.journal and ((params.journal.length isnt 8 and params.journal.length isnt 9) or params.journal.indexOf('-') is -1)
-    try params.journal = API.service.jct.suggest('journal', params.journal).data[0].id
   if params.issn
     params.journal = params.issn
     delete params.issn
   if params.ror
     params.institution = params.ror
     delete params.ror
-  for p in ['funder','journal','institution']
-    params[p] = params[p].toString() if typeof params[p] is 'number'
-    params[p] = params[p].split(',') if typeof params[p] is 'string' and params[p].indexOf(',') isnt -1
-    params[p] = [params[p]] if typeof params[p] is 'string'
-    params[p] ?= []
   refresh ?= params.refresh if params.refresh?
   if params.checks?
     checks = if typeof params.checks is 'string' then params.checks.split(',') else params.checks
   retention = params.retention if params.retention?
-  results = []
+
+  res =
+    request:
+      started: Date.now()
+      ended: undefined
+      took: undefined
+      journal: []
+      funder: []
+      institution: []
+      checks: checks
+      retention: retention
+    compliant: false
+    results: []
+
+  for p in ['funder','journal','institution']
+    params[p] = params[p].toString() if typeof params[p] is 'number'
+    params[p] = params[p].split(',') if typeof params[p] is 'string' and params[p].indexOf(',') isnt -1
+    if typeof params[p] is 'string' and (params[p].indexOf(' ') isnt -1 or (p is 'journal' and params[p].indexOf('-') is -1))
+      try
+        ad = API.service.jct.suggest(p, params[p]).data[0]
+        params[p] = ad.id
+        res.request[p].push {id: params[p], title: ad.title, issn: ad.issn, publisher: ad.publisher}
+    params[p] = [params[p]] if typeof params[p] is 'string'
+    params[p] ?= []
+    if not res.request[p].length
+      for v in params[p]
+        try
+          if rec = API.service.jct.suggest(p, v).data[0]
+            res.request[p].push {id: rec.id, title: rec.title, issn: rec.issn, publisher: rec.publisher}
+          else
+            res.request[p].push {id: params[p][v]}
+        catch
+          res.request[p].push {id: params[p][v]}
+
+  rq = Random.id() # random ID to store with the cached results, to measure number of unique requests that aggregate multiple sets of entities
   checked = 0
-  compliant = false
   _check = (funder, journal, institution) ->
     hascompliant = false
     _results = []
@@ -251,21 +295,23 @@ API.service.jct.calculate = (params={}, refresh, checks=['permission', 'doaj', '
         cr[if pr.route is 'fully_oa' then 'doaj' else if pr.route is 'self_archiving' then 'permission' else pr.route] = false
         _results.push pr
 
+    _rtn = {}
     _ck = (which) ->
       Meteor.setTimeout () ->
         try
           if rs = API.service.jct[which] journal, institution
             for r in (if _.isArray(rs) then rs else [rs])
               hascompliant = true if r.compliant is 'yes'
+              if which is 'permission' and not hascompliant and retention
+                 # retention is a special case on permissions, done this way so can be easily disabled for testing
+                _rtn[journal] ?= API.service.jct.retention journal
+                r.compliant = _rtn[journal].compliant
+                hascompliant = true if r.compliant is 'yes'
+                r.log.push(lg) for lg in _rtn[journal].log
+                if _rtn[journal].qualifications? and _rtn[journal].qualifications.length
+                  r.qualifications ?= []
+                  r.qualifications.push(ql) for ql in _rtn[journal].qualifications
               _results.push r
-            if which is 'permission' and not hascompliant and retention
-               # retention is a special case on permissions, done this way so can be easily disabled for testing
-              rtn = API.service.jct.retention journal
-              _results[_results.length-1].compliant = rtn.compliant
-              _results[_results.length-1].log.push(lg) for lg in rtn.log
-              if rtn.qualifications? and rtn.qualifications.length
-                _results[_results.length-1].qualifications ?= []
-                _results[_results.length-1].qualifications.push(ql) for ql in rtn.qualifications
           cr[which] = Date.now()
         catch
           cr[which] = false
@@ -277,10 +323,10 @@ API.service.jct.calculate = (params={}, refresh, checks=['permission', 'doaj', '
       future = new Future()
       Meteor.setTimeout (() -> future.return()), 100
       future.wait()
-    compliant = true if hascompliant
+    res.compliant = true if hascompliant
     # store a new set of results every time without removing old ones, to keep track of incoming request amounts
-    #jct_compliance.insert journal: journal, funder: funder, institution: institution, rq: rq, checks: checks, compliant: hascompliant, cache: (if pre? then true else false), results: _results
-    results.push(rs) for rs in _results
+    jct_compliance.insert journal: journal, funder: funder, institution: institution, rq: rq, checks: checks, compliant: hascompliant, cache: (if pre? then true else false), results: _results
+    res.results.push(rs) for rs in _results
 
     checked += 1
 
@@ -295,23 +341,19 @@ API.service.jct.calculate = (params={}, refresh, checks=['permission', 'doaj', '
 
   # start an async check for every combo
   _prl = (combo) -> Meteor.setTimeout (() -> _check combo.funder, combo.journal, combo.institution), 1
-  _prl(c) for c in combos
+  for c in combos
+    if c.institution isnt undefined or c.funder isnt undefined or c.journal isnt undefined
+      _prl c
+    else
+      checked += 1
   while checked isnt combos.length
     future = new Future()
     Meteor.setTimeout (() -> future.return()), 100
     future.wait()
 
-  ended = Date.now()
-  return
-    request:
-      started: started
-      ended: ended
-      took: ended-started
-      issn: params.journal
-      funder: params.funder
-      ror: params.institution
-    compliant: compliant
-    results: results
+  res.request.ended = Date.now()
+  res.request.took = res.request.ended - res.request.started
+  return res
 
 
 
@@ -341,20 +383,32 @@ API.service.jct.ta = (issn, ror, at) ->
     qr += 'ror.exact:"' + ror + '"'
   journals = {}
   institutions = {}
+  count = 0
   jct_agreement.each qr, (rec) -> # how many could this be? If many, will it be fast enough?
-    if rec.issn
+    count += 1
+    if rec.issn?
       journals[rec.rid] = rec
-    else if rec.ror
+    else if rec.ror?
       institutions[rec.rid] = rec
+  agreements = {}
   for j of journals # is this likely to be longer than institutions?
     if institutions[j]?
-      rs = _.clone res
-      rs.compliant = 'yes'
-      rs.qualifications = if journals[j].corresponding_authors or institutions[j].corresponding_authors then [{corresponding_authors: {}}] else []
-      rs.log[0].result = 'A currently active transformative agreement containing the journal and institution was found'
-      rs.ended = Date.now()
-      rs.took = rs.ended-rs.started
-      tas.push rs
+      allow = true # avoid possibly duplicate TAs
+      agreements[j] ?= {}
+      for isn in (if typeof journals[j].issn is 'string' then [journals[j].issn] else journals[j].issn)
+        agreements[j][isn] ?= []
+        if institutions[j].ror not in agreements[j][isn]
+          agreements[j][isn].push institutions[j].ror
+        else
+          allow = false
+      if allow
+        rs = _.clone res
+        rs.compliant = 'yes'
+        rs.qualifications = if journals[j].corresponding_authors or institutions[j].corresponding_authors then [{corresponding_authors: {}}] else []
+        rs.log[0].result = 'A currently active transformative agreement containing the journal and institution was found - ' + institutions[j].rid
+        rs.ended = Date.now()
+        rs.took = rs.ended-rs.started
+        tas.push rs
   if tas.length is 0
     res.compliant = 'no'
     res.log[0].result = 'There are no current transformative agreements containing the journal and institution'
@@ -417,7 +471,7 @@ API.service.jct.ta.journal = (issn) ->
 # only validated agreements will be exposed at the following sheet
 # https://docs.google.com/spreadsheets/d/e/2PACX-1vStezELi7qnKcyE8OiO2OYx2kqQDOnNsDX1JfAsK487n2uB_Dve5iDTwhUFfJ7eFPDhEjkfhXhqVTGw/pub?gid=1130349201&single=true&output=csv
 # get the "Data URL" - if it's a valid URL, and the End Date is after current date, get the csv from it
-API.service.jct.ta.import = () ->
+API.service.jct.ta.import = (mail=true) ->
   try API.service.jct.ta.esac undefined, true
   records = []
   res = sheets: 0, ready: 0, records: 0
@@ -426,7 +480,9 @@ API.service.jct.ta.import = () ->
     if typeof ov?['Data URL'] is 'string' and ov['Data URL'].trim().indexOf('http') is 0 and ov?['End Date']? and moment(ov['End Date'].trim(), 'YYYY-MM-DD').valueOf() > Date.now()
       res.ready += 1
       src = ov['Data URL'].trim()
+      console.log src
       for rec in API.convert.csv2json src
+        console.log records.length
         for e of rec # get rid of empty things
           delete rec[e] if not rec[e]
         ri = {}
@@ -446,18 +502,35 @@ API.service.jct.ta.import = () ->
           rec[k] = ov[k] for k of ov
           rec.issn = []
           for ik in ['ISSN (Print)','ISSN (Online)']
-            for isp in (if rec[ik] then rec[ik].split(',') else [])
+            console.log(rec[ik],rec['ESAC ID']) if rec[ik] isnt undefined and typeof rec[ik] isnt 'string' 
+            for isp in (if rec[ik] and typeof rec[ik] is 'string' and rec[ik].indexOf('-') isnt -1 then rec[ik].split(',') else [])
               isp = isp.trim()
               rec.issn.push(isp) if isp.length and isp not in rec.issn
           rec.journal = rec['Journal Name'].trim() if rec['Journal Name']?
           rec.corresponding_authors = true if rec['C/A Only'].trim().toLowerCase() is 'yes'
           rec.rid = (if rec['ESAC ID'] then rec['ESAC ID'].trim() else '') + (if rec['ESAC ID'] and rec['Relationship'] then '_' + rec['Relationship'].trim() else '') # are these sufficient to be unique?
           res.records += 1
-          records.push(rec) if rec.journal and rec.issn.length
-  jct_agreement.remove '*'
-  loaded = jct_agreement.insert records
-  try res.loaded = loaded.responses[0].data.items.length
-  res.extracted = records.length
+          if rec.journal and rec.issn.length
+            fnd = []
+            for ic in _.clone rec.issn
+              if ic not in fnd
+                fnd.push ic
+                if af = academic_journal.find 'issn.exact:"' + ic + '"'
+                  for an in af.issn
+                    fnd.push an
+                    rec.issn.push(an) if an not in rec.issn
+            records.push rec
+  if records.length
+    console.log 'Removing and reloading ' + records.length + ' agreements'
+    jct_agreement.remove '*'
+    jct_agreement.insert records
+    res.extracted = records.length
+  if mail
+    API.mail.send
+      from: 'nobody@cottagelabs.com'
+      to: 'jct@cottagelabs.com'
+      subject: 'JCT TA import complete'
+      text: JSON.stringify res, '', 2
   return res
 
 
@@ -484,7 +557,16 @@ API.service.jct.tj = (issn, refresh=86400000) -> # refresh each day?
         try
           tj.issn ?= []
           tj.issn.push rec['e-ISSN (Online/Web)'].trim() if rec['e-ISSN (Online/Web)']
-        tjs.push(tj) if not _.isEmpty tj
+        if not _.isEmpty tj
+          fnd = []
+          for ic in _.clone tj.issn ? []
+            if ic not in fnd
+              fnd.push ic
+              if af = academic_journal.find 'issn.exact:"' + ic + '"'
+                for an in af.issn
+                  fnd.push an
+                  tj.issn.push(an) if an not in tj.issn
+          tjs.push tj
       API.http.cache 'jct', 'tj', tjs
 
   if issn
@@ -522,12 +604,25 @@ API.service.jct.tj = (issn, refresh=86400000) -> # refresh each day?
 #rights_rentention_funder_implementation - the journal does not have an SA policy and the funder has a rights retention policy that starts in the future. There should be one record of this per funder that meets the conditions, and the following qualification specific data is requried:
 #funder: <funder name>
 #date: <date policy comes into force (YYYY-MM-DD)
-API.service.jct.retention = (journal) ->
+API.service.jct._retention = false
+API.service.jct.retention = (journal, refresh) ->
   # check the rights retention data source once it exists if the record is not in OAB
   # for now this is not used directly, just a fallback to something that is not in OAB
   # will be a list of journals by ISSN and a number 1,2,3,4,5
   # import them if not yet present (and probably do some caching)
   rets = []
+  if API.service.jct._retention isnt false and refresh isnt true
+    rets = API.service.jct._retention
+  else
+    for rt in API.convert.csv2json 'https://docs.google.com/spreadsheets/d/e/2PACX-1vTVZwZtdYSUFfKVRGO3jumQcLEjtnbdbw7yJ4LvfC2noYn3IwuTDjA9CEjzSaZjX8QVkWijqa3rmicY/pub?gid=0&single=true&output=csv'
+      rt.journal = rt['Journal Name'].trim()
+      rt.issn = []
+      rt.issn.push(rt['ISSN (print)'].trim()) if rt['ISSN (print)']
+      rt.issn.push(rt['ISSN (online)'].trim()) if rt['ISSN (online)']
+      rt.position = if typeof rt.Position is 'number' then rt.Position else parseInt rt.Position.trim()
+      rt.publisher = rt.Publisher.trim() if rt.publisher
+      rets.push(rt) if rt.issn.length and rt.position? and typeof rt.position is 'number' and rt.position isnt null and not isNaN rt.position
+
   if journal
     res =
       started: Date.now()
@@ -539,13 +634,13 @@ API.service.jct.retention = (journal) ->
       issn: journal
       log: [{action: 'Check for author rights retention', result: 'Rights retention not found, so default compliant'}]
     for ret in rets
-      if ret.issn is journal
-        if ret.number is 5 # if present and 5, not compliant
-          res.log[0].result = 'Rights retention number ' + ret.number + ' so not compliant'
+      if journal in ret.issn
+        delete res.qualifications
+        if ret.position is 5 # if present and 5, not compliant
+          res.log[0].result = 'Rights retention number ' + ret.position + ' so not compliant'
           res.compliant = 'no'
-          delete res.qualifications
         else
-          res.log[0].result = 'Rights retention number ' + ret.number + ' so compliant'
+          res.log[0].result = 'Rights retention number ' + ret.position + ' so compliant, but check funder qualifications if any'
           # if present and any other number, or no answer, then compliant with some funder quals - so what funder quals to add?
         break
     res.ended = Date.now()
@@ -580,7 +675,7 @@ API.service.jct.permission = (journal) ->
         res.log[2].result = (if 'postprint' in pb.version then 'Postprint' else 'Publisher PDF') + ' can be archived'
         res.log.push {action: 'Check there is no embargo period'}
         # and Embargo is zero
-        if not res.embargo_end
+        if not res.embargo_end and not res.embargo_months
           res.log[3].result = 'There is no embargo period'
           res.log.push {action: 'Check there is a suitable licence'}
           lc = false
@@ -640,12 +735,12 @@ API.service.jct.doaj = (issn, refresh=86400000) -> # refresh each day
       if p.pissn is issn or p.eissn is issn
         res.log[0].result = 'Journal is awaiting processing for acceptance to join the DOAJ'
         res.log.push {action: 'Check how old the DOAJ application is'}
-        if true # if an application, has to have applied within X months (probably 4 - where will the application date be?)
-          res.log[1].result = 'Application to DOAJ is still current, being X months old'
+        if true # if an application, has to have applied within 6 months
+          res.log[1].result = 'Application to DOAJ is still current, being less than six months old'
           res.compliant = 'yes'
           res.qualifications = [{doaj_under_review: {}}]
         else
-          res.log[1].result = 'Application is too old, so the journal is not a valid route'
+          res.log[1].result = 'Application is more than six months old, so the journal is not a valid route'
           res.compliant = 'no'
 
     # if there wasn't an application, continue to check DOAJ itself
@@ -653,6 +748,25 @@ API.service.jct.doaj = (issn, refresh=86400000) -> # refresh each day
       res.log.push {action: 'Check if the journal is currently in the DOAJ'}
       if db = academic_journal.find 'issn.exact:"' + issn + '" AND src.exact:"doaj"'
         res.log[1].result = 'The journal has been found in DOAJ'
+        res.log.push action: 'Check if the journal has a suitable licence' # only do licence check for now
+        # Publishing License	bibjson.license[].type	bibjson.license[].type	CC BY, CC BY SA, CC0	CC BY ND
+        pl = false
+        if db.license? and db.license.length
+          for bl in db.license
+            if typeof bl?.type is 'string' and bl.type.toLowerCase().trim().replace(/ /g,'').replace(/-/g,'') in ['ccby','ccbysa','cc0','ccbynd']
+              pl = bl.type
+              break
+        if not db.licence?
+          res.log[2].result = 'Licence data is missing, compliance cannot be calculated'
+          missing.push 'licence'
+        else if pl
+          res.log[2].result = 'The journal has a suitable licence: ' + pl
+          res.compliant = 'yes'
+        else
+          res.log[2].result = 'The journal does not have a suitable licence'
+          res.compliant = 'no'
+
+        ''' simplify to only check licence for the time being - the rest of these full checks may be added later so keep the code for now.
         res.log.push action: 'Check if the DOAJ indicates the author retains copyright'
         # must have Editorial policies (true if in DOAJ anyway) and Embargo has to be 0 which is implicitly true if in DOAJ anyway
         # there are two ways to check each of the following because DOAJ is soon changing format so cover both for now
@@ -710,7 +824,7 @@ API.service.jct.doaj = (issn, refresh=86400000) -> # refresh each day
                     res.log[7].result = 'Licence data is missing, compliance cannot be calculated'
                     missing.push 'licence'
                   else if pl
-                    res.log[7].result = 'The journal has a suitable licence: ' + bl
+                    res.log[7].result = 'The journal has a suitable licence: ' + pl
                     res.log.push action: 'Check if the journal has an embedded licence'
                     # License embedded	bibjson.license[].embedded:true	bibjson.article.license_display contains "Embed"
                     acceptable = db.article?.license_display is 'string' and db.article.license_display.toLowerCase().indexOf('embed') isnt -1
@@ -723,7 +837,7 @@ API.service.jct.doaj = (issn, refresh=86400000) -> # refresh each day
                       res.log[8].result = 'Embedded licence data is missing, compliance cannot be calculated'
                       missing.push 'article.license_display'
                     else if acceptable
-                      res.log[8].result = 'The journal does have an embedded licence'
+                      res.log[8].result = 'The journal has an embedded licence'
                       res.compliant = 'yes'
                       res.url = 'https://doaj.org/toc/' + issn
                     else
@@ -746,7 +860,7 @@ API.service.jct.doaj = (issn, refresh=86400000) -> # refresh each day
             res.compliant = 'no'
         else
           res.log[2].result = 'The author does not retain copyright'
-          res.compliant = 'no'
+          res.compliant = 'no' '''
       else
         res.log[1].result = 'Journal is not in DOAJ'
         res.compliant = 'no'
@@ -782,10 +896,12 @@ API.service.jct.funders = (id,refresh) ->
             rec[k] = (rec[k].split('<')[0] + rec[k].split('>')[1].split('<')[0] + rec[k].split('>').pop()).trim()
         else
           delete rec[k]
-      if rec.retention and rec.retention.indexOf('Note:') isnt -1
-        rec.notes ?= []
-        rec.notes.push rec.retention.split('Note:')[1].replace(')','').trim()
-        rec.retention = rec.retention.split('Note:')[0].replace('(','').trim()
+      if rec.retention
+        if rec.retention.indexOf('Note:') isnt -1
+          rec.notes ?= []
+          rec.notes.push rec.retention.split('Note:')[1].replace(')','').trim()
+          rec.retention = rec.retention.split('Note:')[0].replace('(','').trim()
+        rec.retentionAt = moment('01012021','DDMMYYYY').valueOf() if rec.retention.toLowerCase().indexOf('early adopter') isnt -1
       try rec.startAt = moment(rec.launch, 'Do MMMM YYYY').valueOf()
       delete rec.startAt if JSON.stringify(rec.startAt) is 'null'
       if not rec.startAt? and rec.launch?
@@ -796,28 +912,32 @@ API.service.jct.funders = (id,refresh) ->
     API.service.jct._funders = res
 
   if id?
-    res = undefined
     for e in res
-      res = e if e.id is id
+      if e.id is id
+        res = e
+        break
   return res
 
 
   
-API.service.jct.import = (params) ->
+API.service.jct.import = (params={}) ->
   # run all imports necessary for up to date data
-  if not params? or _.isEmpty params
-    params = retention: true, funders: true, journals: true, doaj: true, ta: true, tj: true
+  params[p] ?= true for p in ['retention', 'funders', 'journals', 'doaj', 'ta', 'tj']
   res = {}
-  if false #params.journals
-    res.journals = API.service.academic.journal.load ['doaj'] # or a new load of all journals? what about source files?
+  if params.journals
+    # or a new load of all journals? or include crossref? what about source files?
+    # doaj only updates their journal dump once a week so calling academic journal load
+    # won't actually do anything if the dump file name has not changed since last run 
+    # or if a refresh is called
+    res.journals = API.service.academic.journal.load ['doaj'] # crossref?
   if params.doaj
     res.doaj = API.service.jct.doaj undefined, true
   if params.ta
-    res.ta = API.service.jct.ta.import()
+    res.ta = API.service.jct.ta.import false
   if params.tj
     res.tj = API.service.jct.tj undefined, true
   if params.retention
-    res.retention = API.service.jct.retention()
+    res.retention = API.service.jct.retention undefined, true
   if params.funders
     API.service.jct.funders undefined, true
   # institution lists?
@@ -829,8 +949,17 @@ API.service.jct.import = (params) ->
     text: JSON.stringify res, '', 2
   return res
   
-# create an import cron if necessary, or use noddy job runner if more appropriate
-# may also cron a list of pings via cloudflare to preload it
+
+# run import every day on the main machine
+_jct_import = () ->
+  if API.settings.cluster?.ip? and API.status.ip() not in API.settings.cluster.ip
+    API.log 'Setting up a JCT import to run every day if not triggered by request on ' + API.status.ip()
+    Meteor.setInterval (() ->
+      newest = jct_agreement.find '*', true
+      if newest?.createdAt < Date.now()-86400000
+        API.service.jct.import()
+      ), 43200000
+Meteor.setTimeout _jct_import, 18000
 
 
 
@@ -839,7 +968,7 @@ API.service.jct.examples = () ->
 
 # set up a test on difftest or a cron or by URL trigger as necessary. Expected test results:
 # https://docs.google.com/document/d/1AZX_m8EAlnqnGWUYDjKmUsaIxnUh3EOuut9kZKO3d78/edit
-API.service.jct.test = () ->
+API.service.jct.test = (params={}) ->
   # A series of queries based on journals, with existing knowledge of their policies. 
   # To test TJ and Rights retention elements of the algorithm some made up information is included, 
   # this is marked with [1]. Not all queries test all the compliance routes (in particular rights retention).
@@ -856,91 +985,90 @@ API.service.jct.test = () ->
       'expected outcome': 'Researcher can publish via gold open access route or via TA'
       qualification: 'Researcher must be corresponding author to be eligible for TA'
       'actual outcome': 'As expected'
-    #two: # Query 2
-    #  journal: 'Aging Cell' # (published by Wiley, fully OA, in DOAJ, CC BY, included within UK Jisc TA)
-    #  institution: 'Emory University' # (no TA or Wiley agreement)
-    #  funder: 'Wellcome'
-    #  'expected outcome': 'Researcher can publish via gold open access route'
-    #  'actual outcome': 'As expected'
+      test: (r) -> return r.compliant and r.qualification?corresponding_authors?
+    two: # Query 2
+      journal: 'Aging Cell' # (published by Wiley, fully OA, in DOAJ, CC BY, included within UK Jisc TA)
+      institution: 'Emory University' # (no TA or Wiley agreement)
+      funder: 'Wellcome'
+      'expected outcome': 'Researcher can publish via gold open access route'
+      'actual outcome': 'As expected'
+      test: (r) -> return r.compliant
+    three: # Query 3
+      journal: 'Aging Cell' # (published by Wiley, fully OA, in DOAJ, CC BY, included within UK Jisc & VSNU TAs)
+      institution: ['Emory University', 'Cardiff University', 'Utrecht University'] # (Emory has no TA or Wiley account, Cardiff is subscriber to Jisc TA, Utrecht is subscriber to VSNU TA)
+      funder: ['Wellcome', 'Wellcome', 'NWO']
+      'expected outcome': 'For Cardiff and Utrecht: Researcher can publish via gold open access route or via TA (Qualification: Researcher must be corresponding author to be eligible for TA). For Emory: Researcher can publish via gold open access route'
+      'actual outcome': 'As expected'
+      test: (r) ->
+        return 'TODO'
+    four: # Query 4
+      journal: 'Proceedings of the Royal Society B' # (subscription journal published by Royal Society, AAM can be shared CC BY no embargo, UK Jisc Read Publish Deal)
+      institution: 'University of Cambridge' # (subscribe to Read Publish Deal)
+      funder: 'EC'
+      'expected outcome': 'Researcher can self-archive or publish via Read Publish Deal'
+      qualification: 'Research must be corresponding author to be eligible for Read Publish Deal'
+      'actual outcome': 'As expected'
+      test: (r) -> return r.compliant and r.qualification?corresponding_authors?
+    five: # Query 5
+      journal: 'Proceedings of the Royal Society B' # (subscription journal published by Royal Society, AAM can be shared CC BY no embargo, UK Jisc Read Publish Deal)
+      institution: 'University of Cape Town'
+      funder: 'BMGF'
+      'expected outcome': 'Researcher can self-archive'
+      'actual outcome': 'As expected'
+      test: (r) -> return r.compliant
+    six: # Query 6
+      journal: 'Development' # (Transformative Journal, AAM 12 month embargo) 0951-1991
+      institution: 'University of Cape Town'
+      funder: 'SAMRC'
+      'expected outcome': 'Researcher can publish via payment of APC (Transformative Journal) or self-archive the AAM via rights retention.'
+      qualification: 'Researcher must inform publisher of funder and pre-existing CC BY licence on manuscript at point of submission.'
+      'actual outcome': 'As expected'
+      test: (r) -> return 'TODO'
+    seven: # Query 7
+      journal: 'Brill Research Perspectives in Law and Religion' # (Subscription Journal, VSNU Read Publish Agreement, AAM can be shared CC BY-NC no embargo, Option 4 Rights Retention Policy [1])
+      institution: 'University of Amsterdam' # (not subscribed to Brill VSNU Agreement)
+      funder: 'NWO'
+      'expected outcome': 'Researcher can self-archive the AAM via rights retention.'
+      qualification: 'Researcher must inform publisher of funder and pre-existing CC BY licence on manuscript at point of submission.'
+      'actual outcome': 'As expected'
+      test: (r) -> return 'TODO'
+    eight: # Query 8
+      journal: 'Migration and Society' # (Subscribe to Open, CC BY, CC BY-ND and CC BY-NC-ND licences available but currently only CC BY-NC-ND in DOAJ)
+      institution: 'University of Vienna'
+      funder: 'FWF'
+      'expected outcome': 'No routes to compliance'
+      'actual outcome': 'As expected'
+      test: (r) -> return 'TODO'
+    nine: # Query 9 
+      journal: 'Folia Historica Cracoviensia' # (fully oa, in DOAJ, CC BY-NC-ND, No known prior notification of rights retention [1])
+      institution: ['University of Warsaw', 'University of Ljubljana']
+      funder: ['NCN', 'ARRS'] # (NCN is early adopter of Rights Retention, ARRS is adoption to follow Rights Retention)
+      'expected outcome': 'For NCN: Researcher can self-archive the AAM via rights retention. For ARRS: No route to compliance.'
+      qualification: 'Researcher must inform publisher of funder and pre-existing CC BY licence on manuscript at point of submission.'
+      'actual outcome': 'As expected'
+      test: (r) -> return 'TODO'
+    ten: # Query 10
+      journal: 'Journal of Clinical Investigation' # (subscription for front end material, research articles: publication fee, no embargo, CC BY licence where required by funders, not in DOAJ, Option 5 Rights Retention Policy [1])
+      institution: 'University of Vienna'
+      funder: 'FWF'
+      'expected outcome': 'Researcher can publish via standard publication route'
+      'actual outcome': 'Researcher cannot publish in this journal and comply with funders OA policy'
+      test: (r) -> return 'TODO'
 
   for q of queries
     qr = queries[q]
     ans = query: q
+    ans['pass/fail'] = 'fail'
     ans.inputs = queries[q]
-    ans.discovered = 
-      issn: API.service.jct.suggest('journal', qr.journal).data[0].id
-      ror: API.service.jct.suggest('institution', qr.institution).data[0].id
-      funder: API.service.jct.suggest('funder', qr.funder).data[0].id
-    ans.result = API.service.jct.calculate {funder: ans.discovered.funder, journal: ans.discovered.issn, institution: ans.discovered.ror}
+    ans.discovered = {}
+    try ans.discovered.issn = API.service.jct.suggest('journal', qr.journal).data[0].id
+    try ans.discovered.ror = API.service.jct.suggest('institution', qr.institution).data[0].id
+    try ans.discovered.funder = API.service.jct.suggest('funder', qr.funder).data[0].id
+    ans.result = API.service.jct.calculate {funder: ans.discovered.funder, journal: ans.discovered.issn, institution: ans.discovered.ror}, params.refresh, params.checks, params.retention
+    ans['pass/fail'] = queries[q].test ans.result
     res.push ans
     
   return res
-  
-    
-    # Query 3
-    # Journal: Aging Cell (published by Wiley, fully OA, in DOAJ, CC BY, included within UK Jisc & VSNU TAs)
-    # Institutions: Emory University (no TA or Wiley account), Cardiff University (subscriber to Jisc TA), Utrecht University (subscriber to VSNU TA)
-    # Funders: Wellcome, Wellcome, NWO
-    # 2 Expected Outcomes:
-    # For Cardiff and Utrecht: Researcher can publish via gold open access route or via TA (Qualification: Researcher must be corresponding author to be eligible for TA)
-    # For Emory: Researcher can publish via gold open access route
-    # Actual JCT outcome: As expected
-    
-    # Query 4
-    # Journal: Proceedings of the Royal Society B (subscription journal published by Royal Society, AAM can be shared CC BY no embargo, UK Jisc Read Publish Deal)
-    # Institution: University of Cambridge (subscribe to Read Publish Deal)
-    # Funder: EC
-    # Expected JCT outcome: Researcher can self-archive or publish via Read Publish Deal  
-    # Qualification: Research must be corresponding author to be eligible for Read Publish Deal
-    # Actual JCT outcome: As expected
-    
-    # Query 5
-    # Journal: Proceedings of the Royal Society B (subscription journal published by Royal Society, AAM can be shared CC BY no embargo, UK Jisc Read Publish Deal)
-    # Institution: University of Cape Town
-    # Funder: BMGF
-    # Expected JCT outcome: Researcher can self-archive
-    # Actual JCT outcome: As expected
-    
-    # Query 6
-    # Journal: Nature (Transformative Journal [1], Option 4 Rights Retention Policy [1])
-    # Institution: University of Cape Town
-    # Funder: SAMRC
-    # Expected JCT outcome: Researcher can publish via payment of APC (Transformative Journal) or self-archive the AAM via rights retention.
-    # Qualification: Researcher must inform publisher of funder and pre-existing CC BY licence on manuscript at point of submission.
-    # Actual JCT outcome: As expected
-    
-    # Query 7
-    # Journal: Brill Research Perspectives in Law and Religion (Subscription Journal, VSNU Read Publish Agreement, AAM can be shared CC BY-NC no embargo, Option 4 Rights Retention Policy [1])
-    # Institution: University of Amsterdam (not subscribed to Brill VSNU Agreement)
-    # Funder: NWO
-    # Expected JCT outcome: Researcher can self-archive the AAM via rights retention.
-    # Qualification: Researcher must inform publisher of funder and pre-existing CC BY licence on manuscript at point of submission. 
-    # Actual JCT outcome: As expected
-    
-    # Query 8
-    # Journal: Journal of Fractal Geometry (Subscribe to Open, Where funders require AAM can be shared CC BY no embargo)
-    # Institution: Università di Roma Tor Vergata
-    # Funder: INFN
-    # Expected JCT outcome: Researcher can self archive AAM
-    # Actual JCT outcome: As expected
-    
-    # Query 9 
-    # Journal: Folia Historica Cracoviensia (fully oa, in DOAJ, CC BY-NC-ND, No known prior notification of rights retention [1])
-    # Institution: University of Warsaw, University of Ljubljana
-    # Funder: NCN (early adopter of Rights Retention), ARRS (adoption to follow Rights Retention)
-    # Expected JCT Outcome: 
-    # For NCN: Researcher can self-archive the AAM via rights retention.
-    # Qualification: Researcher must inform publisher of funder and pre-existing CC BY licence on manuscript at point of submission. 
-    # For ARRS: No route to compliance.
-    # Actual JCT outcome: As expected
-    
-    # Query 10
-    # Journal: Journal of Clinical Investigation (subscription for front end material, research articles: publication fee, no embargo, CC BY licence where required by funders, not in DOAJ, Option 5 Rights Retention Policy [1])
-    # Institution: University of Vienna
-    # Funder: FWF
-    # Expected JCT Outcome: Researcher can publish via standard publication route 
-    # Actual JCT Outcome: Researcher cannot publish in this journal and comply with funders OA policy
-
 
 
 
