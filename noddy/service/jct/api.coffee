@@ -28,6 +28,7 @@ funders will be a list given to us by JCT detailing their particular requirement
 # define the necessary collections
 jct_agreement = new API.collection {index:"jct",type:"agreement"}
 jct_compliance = new API.collection {index:"jct",type:"compliance"}
+jct_unknown = new API.collection {index:"jct",type:"unknown"}
 
 # define the jct service object in the overall API
 API.service ?= {}
@@ -61,6 +62,8 @@ API.add 'service/jct/suggest', get: () -> return API.service.jct.suggest this.qu
 API.add 'service/jct/suggest/:which', get: () -> return API.service.jct.suggest this.urlParams.which, undefined, this.queryParams.from, this.queryParams.size
 API.add 'service/jct/suggest/:which/:ac', get: () -> return API.service.jct.suggest this.urlParams.which, this.urlParams.ac, this.queryParams.from, this.queryParams.size
 
+API.add 'service/jct/unknown', () -> return jct_unknown.search this
+API.add 'service/jct/unknown/send', () -> return API.service.jct.unknown undefined, undefined, undefined, undefined, this.queryParams.since ? true
 API.add 'service/jct/compliance', () -> return jct_compliance.search this
 API.add 'service/jct/compliant', () -> return API.service.jct.compliance this.queryParams.funder, this.queryParams.journal, this.queryParams.institution, this.queryParams.refresh, this.queryParams.noncompliant ? false
 API.add 'service/jct/journal', () -> return academic_journal.search this # should journals be restricted to only those of the 200 publishers plan S wish to focus on?
@@ -158,10 +161,10 @@ API.add 'service/jct/test', get: () -> return API.service.jct.test this.queryPar
 API.service.jct.feedback = (params={}) ->
   if typeof params.name is 'string' and typeof params.email is 'string' and typeof params.feedback is 'string' and (not params.context? or typeof params.context is 'object')
     API.mail.send
-      from: 'nobody@cottagelabs.com'
-      to: 'jct@cottagelabs.com'
-      subject: 'JCT system feedback'
-      text: JSON.stringify params, '', 2
+      from: if params.email.indexOf('@') isnt -1 and params.email.indexOf('.') isnt -1 then params.email else 'nobody@cottagelabs.com'
+      to:  'jct@cottagelabs.zendesk.com' #'jct@cottagelabs.com'
+      subject: params.subject ? params.feedback.substring(0,100) + if params.feedback.length > 100 then '...' else '' #'JCT system feedback'
+      text: params.feedback + '\n\n' + (if params.subject then '' else JSON.stringify params, '', 2)
     return true
   else
     return false
@@ -179,30 +182,67 @@ API.service.jct.suggest = (which='journal', q, from, size) ->
             matches = false
       res.push({title: f.funder, id: f.id}) if matches
     return total: res.length, data: res
-  else if false #which is 'institution'
-    # this can instead be allowed to go through to academic institution search for much larger coverage
-    # here we only provide institution names if they are present in the current TAs we know about
-    res = []
-    for f in API.service.jct.ta.institution()
-      qs = []
-      matches = true
-      for qp in (if q then q.toLowerCase().split(' ') else []) # will this need to handle matching special chars?
-        if qp not in ['of','the','and','university']
-          qs.push(qp) if qp not in qs
-          if f.title.toLowerCase().indexOf(qp) is -1 and f.id.toLowerCase().indexOf(qp) is -1
-            matches = false
-      if matches
-        if qs.length and f.title.toLowerCase().replace('the ','').replace('university ','').replace('of ','').replace('and ','').indexOf(qs[0]) is 0
-          res.unshift f
-        else
-          res.push f
-    return total: res.length, data: res
   else
-    # TODO if journal search finds nothing, try a "topic" search using some of the search terms
-    # against keywords, subjects, and "topics" on the journals
-    return API.service.academic[which].suggest q, from, size
+    rs = API.service.academic[which].suggest q, from, size
+    if which is 'institution'
+      # here we provide institution names if they are present in the current TAs we know about
+      titles = []
+      ids = []
+      res = []
+      for f in API.service.jct.ta.institution()
+        qs = []
+        matches = true
+        for qp in (if q then q.toLowerCase().split(' ') else []) # will this need to handle matching special chars?
+          if qp not in ['of','the','and','university']
+            qs.push(qp) if qp not in qs
+            if f.title.toLowerCase().indexOf(qp) is -1 and f.id.toLowerCase().indexOf(qp) is -1
+              matches = false
+        if matches and f.title.toLowerCase() not in titles and f.id not in ids
+          if qs.length and f.title.toLowerCase().replace('the ','').replace('university ','').replace('of ','').replace('and ','').indexOf(qs[0]) is 0
+            res.unshift f
+          else
+            res.push f
+          titles.push f.title.toLowerCase()
+          ids.push f.id
+      for r in rs.data
+        if r.title.toLowerCase() not in titles and r.id not in ids
+          titles.push r.title.toLowerCase()
+          ids.push r.id
+          res.push r
+    else
+      res = rs.data
+    return total: res.length, data: res
 
 
+API.service.jct.unknown = (res, funder, journal, institution, send) ->
+  if res?
+    # it may not be worth saving these seperately if compliance result caching is on, but for now will keep them
+    r = _.clone res
+    r._id = (funder ? '') + '_' + (journal ? '') + '_' + (institution ? '') # overwrite dups
+    r.counter = 1
+    if ls = jct_unknown.get r._id
+      r.lastsend = ls.lastsend
+      r.counter += ls.counter ? 0
+    try jct_unknown.insert r
+  if send
+    try
+      if typeof send isnt 'boolean'
+        q = 'createdAt:>' + send
+      else if lf = jct_unknown.find 'lastsend:*', {sort: {lastsend: {order: 'desc'}}}
+        q = 'createdAt:>' + lf.lastsend
+      else
+        q = '*'
+      recs = '"ROUTE","PARAMS","ACTIONS"\n'
+      last = false
+      for un in jct_unknown.fetch q, {newest: false}
+        recs += '"' + un.route + '","' + un._id + '","' + JSON.stringify(un.log).replace(/"/g,'\"') + '"\n'
+        last = un
+      if last isnt false
+        jct_unknown.update last._id, lastsend: Date.now()
+        API.service.jct.feedback name: 'unknowns', email: 'jct@cottagelabs.com', subject: 'JCT system reporting unknowns', feedback: recs
+  return jct_unknown.count()
+Meteor.setTimeout API.service.jct.unknown, 86400000 # send once a day
+  
 
 # check to see if we already know if a given set of entities is compliant
 # and if so, check if that compliance is still valid now
@@ -233,7 +273,7 @@ API.service.jct.compliance = (funder, journal, institution, refresh=86400000, no
 
 
   
-API.service.jct.calculate = (params={}, refresh, checks=['permission', 'doaj', 'ta', 'tj'], retention=false) -> # TODO change retention to true when ready
+API.service.jct.calculate = (params={}, refresh, checks=['permission', 'doaj', 'ta', 'tj'], retention=true) -> # TODO change retention to true when ready
   # given funder(s), journal(s), institution(s), find out if compliant or not
   # note could be given lists of each - if so, calculate all and return a list
   if params.issn
@@ -298,23 +338,29 @@ API.service.jct.calculate = (params={}, refresh, checks=['permission', 'doaj', '
     _rtn = {}
     _ck = (which) ->
       Meteor.setTimeout () ->
-        try
-          if rs = API.service.jct[which] journal, institution
-            for r in (if _.isArray(rs) then rs else [rs])
-              hascompliant = true if r.compliant is 'yes'
-              if which is 'permission' and not hascompliant and retention
-                 # retention is a special case on permissions, done this way so can be easily disabled for testing
-                _rtn[journal] ?= API.service.jct.retention journal
-                r.compliant = _rtn[journal].compliant
-                hascompliant = true if r.compliant is 'yes'
-                r.log.push(lg) for lg in _rtn[journal].log
-                if _rtn[journal].qualifications? and _rtn[journal].qualifications.length
-                  r.qualifications ?= []
-                  r.qualifications.push(ql) for ql in _rtn[journal].qualifications
-              _results.push r
-          cr[which] = Date.now()
-        catch
-          cr[which] = false
+        #try
+        if rs = API.service.jct[which] journal, (if institution? and which in ['permission','ta'] then institution else undefined)
+          for r in (if _.isArray(rs) then rs else [rs])
+            hascompliant = true if r.compliant is 'yes'
+            if which is 'permission' and not hascompliant and retention
+              # new change: only check retention if the funder allows it - and only if there IS a funder?
+              # funder allows if their rights retention date 
+              if funder? and fndr = API.service.jct.funders funder
+                if fndr.retentionAt? and (fndr.retentionAt is 1609459200000 or fndr.retentionAt >= Date.now())
+                  # retention is a special case on permissions, done this way so can be easily disabled for testing
+                  _rtn[journal] ?= API.service.jct.retention journal
+                  r.compliant = _rtn[journal].compliant
+                  hascompliant = true if r.compliant is 'yes'
+                  r.log.push(lg) for lg in _rtn[journal].log
+                  if _rtn[journal].qualifications? and _rtn[journal].qualifications.length
+                    r.qualifications ?= []
+                    r.qualifications.push(ql) for ql in _rtn[journal].qualifications
+            if r.compliant is 'unknown'
+              API.service.jct.unknown r, funder, journal, institution
+            _results.push r
+        cr[which] = Date.now()
+        #catch
+        #  cr[which] = false
       , 1
     for c in checks
       _ck(c) if cr[c]
@@ -473,6 +519,7 @@ API.service.jct.ta.journal = (issn) ->
 # get the "Data URL" - if it's a valid URL, and the End Date is after current date, get the csv from it
 API.service.jct.ta.import = (mail=true) ->
   try API.service.jct.ta.esac undefined, true
+  bads = []
   records = []
   res = sheets: 0, ready: 0, records: 0
   for ov in API.convert.csv2json 'https://docs.google.com/spreadsheets/d/e/2PACX-1vStezELi7qnKcyE8OiO2OYx2kqQDOnNsDX1JfAsK487n2uB_Dve5iDTwhUFfJ7eFPDhEjkfhXhqVTGw/pub?gid=1130349201&single=true&output=csv'
@@ -480,9 +527,7 @@ API.service.jct.ta.import = (mail=true) ->
     if typeof ov?['Data URL'] is 'string' and ov['Data URL'].trim().indexOf('http') is 0 and ov?['End Date']? and moment(ov['End Date'].trim(), 'YYYY-MM-DD').valueOf() > Date.now()
       res.ready += 1
       src = ov['Data URL'].trim()
-      console.log src
       for rec in API.convert.csv2json src
-        console.log records.length
         for e of rec # get rid of empty things
           delete rec[e] if not rec[e]
         ri = {}
@@ -500,25 +545,31 @@ API.service.jct.ta.import = (mail=true) ->
           records.push(ri) if ri.institution and ri.ror
         if not _.isEmpty(rec) and not rec['Journal Last Seen']
           rec[k] = ov[k] for k of ov
+          rec.rid = (if rec['ESAC ID'] then rec['ESAC ID'].trim() else '') + (if rec['ESAC ID'] and rec['Relationship'] then '_' + rec['Relationship'].trim() else '') # are these sufficient to be unique?
           rec.issn = []
           for ik in ['ISSN (Print)','ISSN (Online)']
-            console.log(rec[ik],rec['ESAC ID']) if rec[ik] isnt undefined and typeof rec[ik] isnt 'string' 
-            for isp in (if rec[ik] and typeof rec[ik] is 'string' and rec[ik].indexOf('-') isnt -1 then rec[ik].split(',') else [])
-              isp = isp.trim()
+            for isp in (if typeof rec[ik] is 'string' then rec[ik].split(',') else [])
+              if not rec[ik]? or typeof rec[ik] isnt 'string' or rec[ik].indexOf('-') is -1 or rec[ik].split('-').length > 2 or rec[ik].length < 5
+                bads.push issn: rec[ik], esac: rec['ESAC ID'], rid: rec.rid, src: src
+              isp = isp.toUpperCase().trim()
               rec.issn.push(isp) if isp.length and isp not in rec.issn
           rec.journal = rec['Journal Name'].trim() if rec['Journal Name']?
           rec.corresponding_authors = true if rec['C/A Only'].trim().toLowerCase() is 'yes'
-          rec.rid = (if rec['ESAC ID'] then rec['ESAC ID'].trim() else '') + (if rec['ESAC ID'] and rec['Relationship'] then '_' + rec['Relationship'].trim() else '') # are these sufficient to be unique?
           res.records += 1
           if rec.journal and rec.issn.length
+            inaj = false
             fnd = []
             for ic in _.clone rec.issn
               if ic not in fnd
                 fnd.push ic
                 if af = academic_journal.find 'issn.exact:"' + ic + '"'
+                  inaj = true
                   for an in af.issn
                     fnd.push an
                     rec.issn.push(an) if an not in rec.issn
+            if not inaj
+              # add the ISSN to the journal index
+              academic_journal.insert src: 'jct', issn: rec.issn, title: rec.journal # note these will have no publisher name
             records.push rec
   if records.length
     console.log 'Removing and reloading ' + records.length + ' agreements'
@@ -531,6 +582,12 @@ API.service.jct.ta.import = (mail=true) ->
       to: 'jct@cottagelabs.com'
       subject: 'JCT TA import complete'
       text: JSON.stringify res, '', 2
+    if bads.length
+      API.mail.send
+        from: 'nobody@cottagelabs.com'
+        to: 'jct@cottagelabs.com'
+        subject: 'JCT TA import found ' + bads.length + ' bad ISSNs'
+        text: JSON.stringify bads, '', 2
   return res
 
 
@@ -600,10 +657,11 @@ API.service.jct.tj = (issn, refresh=86400000) -> # refresh each day?
 
 
 # what are these qualifications relevant to? TAs?
-#rights_retention_author_advice - 
-#rights_rentention_funder_implementation - the journal does not have an SA policy and the funder has a rights retention policy that starts in the future. There should be one record of this per funder that meets the conditions, and the following qualification specific data is requried:
-#funder: <funder name>
-#date: <date policy comes into force (YYYY-MM-DD)
+# there is no funder qualification done now, due to retention policy change decision at ened of October 2020. May be added again later.
+# rights_retention_author_advice - 
+# rights_retention_funder_implementation - the journal does not have an SA policy and the funder has a rights retention policy that starts in the future. There should be one record of this per funder that meets the conditions, and the following qualification specific data is requried:
+# funder: <funder name>
+# date: <date policy comes into force (YYYY-MM-DD)
 API.service.jct._retention = false
 API.service.jct.retention = (journal, refresh) ->
   # check the rights retention data source once it exists if the record is not in OAB
@@ -615,12 +673,12 @@ API.service.jct.retention = (journal, refresh) ->
     rets = API.service.jct._retention
   else
     for rt in API.convert.csv2json 'https://docs.google.com/spreadsheets/d/e/2PACX-1vTVZwZtdYSUFfKVRGO3jumQcLEjtnbdbw7yJ4LvfC2noYn3IwuTDjA9CEjzSaZjX8QVkWijqa3rmicY/pub?gid=0&single=true&output=csv'
-      rt.journal = rt['Journal Name'].trim()
+      rt.journal = rt['Journal Name'].trim() if typeof rt['Journal Name'] is 'string'
       rt.issn = []
-      rt.issn.push(rt['ISSN (print)'].trim()) if rt['ISSN (print)']
-      rt.issn.push(rt['ISSN (online)'].trim()) if rt['ISSN (online)']
+      rt.issn.push(rt['ISSN (print)'].trim()) if typeof rt['ISSN (print)'] is 'string' and rt['ISSN (print)'].length
+      rt.issn.push(rt['ISSN (online)'].trim()) if typeof rt['ISSN (online)'] is 'string'and rt['ISSN (online)'].length
       rt.position = if typeof rt.Position is 'number' then rt.Position else parseInt rt.Position.trim()
-      rt.publisher = rt.Publisher.trim() if rt.publisher
+      rt.publisher = rt.Publisher.trim() if typeof rt.Publisher is 'string'
       rets.push(rt) if rt.issn.length and rt.position? and typeof rt.position is 'number' and rt.position isnt null and not isNaN rt.position
 
   if journal
@@ -640,8 +698,9 @@ API.service.jct.retention = (journal, refresh) ->
           res.log[0].result = 'Rights retention number ' + ret.position + ' so not compliant'
           res.compliant = 'no'
         else
-          res.log[0].result = 'Rights retention number ' + ret.position + ' so compliant, but check funder qualifications if any'
+          res.log[0].result = 'Rights retention number ' + ret.position + ' so compliant' #, but check funder qualifications if any'
           # if present and any other number, or no answer, then compliant with some funder quals - so what funder quals to add?
+          # no funder quals now due to change at end of October 2020. May be introduced again later
         break
     res.ended = Date.now()
     res.took = res.ended-res.started
@@ -651,7 +710,7 @@ API.service.jct.retention = (journal, refresh) ->
 
 
 
-API.service.jct.permission = (journal) ->
+API.service.jct.permission = (journal, institution) ->
   res =
     started: Date.now()
     ended: undefined
@@ -662,41 +721,46 @@ API.service.jct.permission = (journal) ->
     issn: journal
     log: [{action: 'Check Open Access Button Permissions for journal'}]
 
-  perms = API.service.oab.p2 journal
-  if perms.best_permission?
-    res.compliant = 'no' # set to no until a successful route through is found
-    pb = perms.best_permission
-    res.log[0].result = if pb.issuer.type is 'journal' then 'The journal is in OAB Permissions' else 'The publisher of the journal is in OAB Permissions'
-    res.log.push {action: 'Check if OAB Permissions says the journal allows archiving'}
-    if pb.can_archive
-      res.log[1].result = 'OAB Permissions confirms the journal allows archiving'
-      res.log.push {action: 'Check if postprint or publisher PDF can be archived'}
-      if 'postprint' in pb.versions or 'publisher pdf' in pb.versions
-        res.log[2].result = (if 'postprint' in pb.version then 'Postprint' else 'Publisher PDF') + ' can be archived'
-        res.log.push {action: 'Check there is no embargo period'}
-        # and Embargo is zero
-        if not res.embargo_end and not res.embargo_months
-          res.log[3].result = 'There is no embargo period'
-          res.log.push {action: 'Check there is a suitable licence'}
-          lc = false
-          for l in res.licences ? []
-            if l.type.toLowerCase().replace(/\-/g,'').replace(/ /g,'') in ['ccby','ccbysa','cc0','ccbynd']
-              lc = l.type
-              break
-          if lc
-            res.log[4].result = 'There is a suitable ' + lc + ' licence'
+  try
+    perms = API.service.oab.permission issn: journal, ror: institution
+    if perms.best_permission?
+      res.compliant = 'no' # set to no until a successful route through is found
+      pb = perms.best_permission
+      res.log[0].result = if pb.journal_is_oa then 'The journal is Open Access' else if pb.issuer?.type is 'journal' then 'The journal is in OAB Permissions' else 'The publisher of the journal is in OAB Permissions'
+      res.log.push {action: 'Check if OAB Permissions says the journal allows archiving'}
+      if pb.can_archive
+        res.log[1].result = 'OAB Permissions confirms the journal allows archiving'
+        res.log.push {action: 'Check if postprint or publisher PDF can be archived'}
+        if 'postprint' in pb.versions or 'publisher pdf' in pb.versions or 'acceptedVersion' in pb.versions or 'publishedVersion' in pb.versions
+          res.log[2].result = (if 'postprint' in pb.versions or 'acceptedVersion' in pb.versions then 'Postprint' else 'Publisher PDF') + ' can be archived'
+          res.log.push {action: 'Check there is no embargo period'}
+          # and Embargo is zero
+          if not pb.embargo_end and not pb.embargo_months
+            res.log[3].result = 'There is no embargo period'
+            res.log.push {action: 'Check there is a suitable licence'}
+            lc = false
+            for l in pb.licences ? []
+              if l.type.toLowerCase().replace(/\-/g,'').replace(/ /g,'') in ['ccby','ccbysa','cc0','ccbynd']
+                lc = l.type
+                break
+            if lc
+              res.log[4].result = 'There is a suitable ' + lc + ' licence'
+              res.compliant = 'yes'
+            else if not pb.licences? or pb.licences.length is 0
+              res.log[4].result = 'No licence information was available in OAB permissions'
+              res.compliant = 'unknown'
+            else
+              res.log[4].result = 'No suitable licence found'
           else
-            res.log[4].result = 'No suitable licence found'
+            res.log[3].result = 'There is an embargo until ' + res.embargo_end
         else
-          res.log[3].result = 'There is an embargo until ' + res.embargo_end
+          res.log[2].result = 'It is not possible to archive postprint or publisher PDF'
       else
-        res.log[2].result = 'It is not possible to archive postprint or publisher PDF'
+        res.log[1].result = 'OAB Permissions states that the journal does not allow archiving'
     else
-      res.log[1].result = 'OAB Permissions states that the journal does not allow archiving'
-    # is there any useful URL that permissions could link back to?
-  else
+      res.log[0].result = 'The journal was not found in OAB Permissions'
+  catch
     res.log[0].result = 'The journal was not found in OAB Permissions'
-    # does this mean unknown or no?
 
   res.ended = Date.now()
   res.took = res.ended-res.started
@@ -704,8 +768,11 @@ API.service.jct.permission = (journal) ->
 
 
 
-# import doaj data including applications in progress, to find journals in  or soon to be in it
-API.service.jct.doaj = (issn, refresh=86400000) -> # refresh each day
+# import doaj data including applications in progress, to find journals in or soon to be in it
+API.service.jct.doaj = (issn, refresh=864000000) ->
+  # refresh in ten days if not refreshed before (this was every day, but delayed so 
+  # that will actually get refreshed in timing along with when DOAJ data updates on the main import run)
+  
   # adding this here rather than in DOAJ service user because this part of DOAJ 
   # API exists exclusively for JCT. Can move later if suitable
   # add a cache to this with a suitable refresh
@@ -930,7 +997,9 @@ API.service.jct.import = (params={}) ->
     # won't actually do anything if the dump file name has not changed since last run 
     # or if a refresh is called
     res.journals = API.service.academic.journal.load ['doaj'] # crossref?
-  if params.doaj
+  if params.doaj and res.journals?.processed
+    # only get new doaj inprogress data if the journals load processed some doaj 
+    # journals (otherwise we're between the week-long period when doaj doesn't update)
     res.doaj = API.service.jct.doaj undefined, true
   if params.ta
     res.ta = API.service.jct.ta.import false
