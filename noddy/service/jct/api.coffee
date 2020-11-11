@@ -47,14 +47,15 @@ API.add 'service/jct',
       else
         return API.service.jct.calculate this.queryParams
   post: () -> return API.service.jct.calculate this.bodyParams
+
 API.add 'service/jct/calculate', 
   get: () -> return API.service.jct.calculate this.queryParams
   post: () -> return API.service.jct.calculate this.bodyParams
+
 API.add 'service/jct/import', 
   get: () -> 
     Meteor.setTimeout (() => API.service.jct.import this.queryParams), 1
     return true
-
 
 # these should also be cached via cloudflare or similar, so that over time we build known lists of suggestions
 # (and can preload them by sending requests to these endpoints with a range of starting characters)
@@ -63,18 +64,37 @@ API.add 'service/jct/suggest/:which', get: () -> return API.service.jct.suggest 
 API.add 'service/jct/suggest/:which/:ac', get: () -> return API.service.jct.suggest this.urlParams.which, this.urlParams.ac, this.queryParams.from, this.queryParams.size
 
 API.add 'service/jct/unknown', () -> return jct_unknown.search this
-API.add 'service/jct/unknown/send', () -> return API.service.jct.unknown undefined, undefined, undefined, undefined, this.queryParams.since ? true
+API.add 'service/jct/unknown/send', get: () -> return API.service.jct.unknown undefined, undefined, undefined, undefined, this.queryParams.since ? true
+API.add 'service/jct/unknown/:start/:end', 
+  csv: true
+  get: () -> 
+    res = []
+    if typeof this.urlParams.start in ['number','string'] or typeof this.urlParams.end in ['number','string']
+      q = if typeof this.urlParams.start in ['number','string'] then 'createdAt:>=' + this.urlParams.start else ''
+      if typeof this.urlParams.end in ['number','string']
+        q += ' AND ' if q isnt ''
+        q += 'createdAt:<' + this.urlParams.end
+    else
+      q = '*'
+    for un in unks = jct_unknown.fetch q
+      res.push route: un.route, params: un._id.replace(/_/g,', '), log: un.log
+    return res
+
 API.add 'service/jct/compliance', () -> return jct_compliance.search this
 API.add 'service/jct/compliant', () -> return API.service.jct.compliance this.queryParams.funder, this.queryParams.journal, this.queryParams.institution, this.queryParams.refresh, this.queryParams.noncompliant ? false
+
 API.add 'service/jct/journal', () -> return academic_journal.search this # should journals be restricted to only those of the 200 publishers plan S wish to focus on?
+
 API.add 'service/jct/funder', 
   csv: true
   get: () -> return API.service.jct.funders undefined, this.queryParams.refresh
 API.add 'service/jct/funders', 
   csv: true
   get: () -> return API.service.jct.funders undefined, this.queryParams.refresh
+
 API.add 'service/jct/institution', get: () -> return [] # return a total list of all the institutions we know? Any more use than the suggest route?
 API.add 'service/jct/institutions', get: () -> return [] # return a total list of all the institutions we know? Any more use than the suggest route?
+
 API.add 'service/jct/publisher', 
   csv: true
   get: () -> return API.service.jct._publishers
@@ -91,7 +111,9 @@ API.add 'service/jct/journal/:iid',
       return j
     else
       return undefined
+
 API.add 'service/jct/funder/:iid', get: () -> return API.service.jct.funders this.urlParams.iid, this.queryParams.refresh
+
 API.add 'service/jct/institution/:iid', 
   get: () -> 
     if res = wikidata_record.find 'snaks.property.exact:"P6782" AND snaks.value.exact:"' + this.urlParams.iid + '"'
@@ -163,7 +185,7 @@ API.service.jct.feedback = (params={}) ->
     API.mail.send
       from: if params.email.indexOf('@') isnt -1 and params.email.indexOf('.') isnt -1 then params.email else 'nobody@cottagelabs.com'
       to:  'jct@cottagelabs.zendesk.com' #'jct@cottagelabs.com'
-      subject: params.subject ? params.feedback.substring(0,100) + if params.feedback.length > 100 then '...' else '' #'JCT system feedback'
+      subject: params.subject ? params.feedback.substring(0,100) + if params.feedback.length > 100 then '...' else ''
       text: params.feedback + '\n\n' + (if params.subject then '' else JSON.stringify params, '', 2)
     return true
   else
@@ -224,24 +246,32 @@ API.service.jct.unknown = (res, funder, journal, institution, send) ->
       r.lastsend = ls.lastsend
       r.counter += ls.counter ? 0
     try jct_unknown.insert r
+  cnt = jct_unknown.count()
   if send
     try
+      cnt = 0
+      start = false
+      end = false
       if typeof send isnt 'boolean'
+        start = send
         q = 'createdAt:>' + send
       else if lf = jct_unknown.find 'lastsend:*', {sort: {lastsend: {order: 'desc'}}}
+        start = lf.lastsend
         q = 'createdAt:>' + lf.lastsend
       else
         q = '*'
-      recs = '"ROUTE","PARAMS","ACTIONS"\n'
       last = false
       for un in jct_unknown.fetch q, {newest: false}
-        recs += '"' + un.route + '","' + un._id + '","' + JSON.stringify(un.log).replace(/"/g,'\"') + '"\n'
+        start = un.createdAt if start is false
+        end = un.createdAt
         last = un
+        cnt += 1
       if last isnt false
         jct_unknown.update last._id, lastsend: Date.now()
-        API.service.jct.feedback name: 'unknowns', email: 'jct@cottagelabs.com', subject: 'JCT system reporting unknowns', feedback: recs
-  return jct_unknown.count()
-Meteor.setTimeout API.service.jct.unknown, 86400000 # send once a day
+        durl = 'https://' + (if API.settings.dev then 'api.jct.cottagelabs.com' else 'api.journalcheckertool.org') + '/unknown/' + start + '/' + end + '.csv'
+        API.service.jct.feedback name: 'unknowns', email: 'jct@cottagelabs.com', subject: 'JCT system reporting unknowns', feedback: durl
+  return cnt
+Meteor.setTimeout (() -> API.service.jct.unknown(undefined, undefined, undefined, undefined, true)), 86400000 # send once a day
   
 
 # check to see if we already know if a given set of entities is compliant
@@ -342,7 +372,7 @@ API.service.jct.calculate = (params={}, refresh, checks=['permission', 'doaj', '
         if rs = API.service.jct[which] journal, (if institution? and which in ['permission','ta'] then institution else undefined)
           for r in (if _.isArray(rs) then rs else [rs])
             hascompliant = true if r.compliant is 'yes'
-            if which is 'permission' and not hascompliant and retention
+            if which is 'permission' and r.compliant isnt 'yes' and retention
               # new change: only check retention if the funder allows it - and only if there IS a funder?
               # funder allows if their rights retention date 
               if funder? and fndr = API.service.jct.funders funder
@@ -735,7 +765,9 @@ API.service.jct.permission = (journal, institution) ->
           res.log[2].result = (if 'postprint' in pb.versions or 'acceptedVersion' in pb.versions then 'Postprint' else 'Publisher PDF') + ' can be archived'
           res.log.push {action: 'Check there is no embargo period'}
           # and Embargo is zero
-          if not pb.embargo_end and not pb.embargo_months
+          if typeof pb.embargo_months is 'string'
+            try pb.embargo_months = parseInt pb.embargo_months
+          if typeof pb.embargo_months is 'number' and pb.embargo_months isnt 0
             res.log[3].result = 'There is no embargo period'
             res.log.push {action: 'Check there is a suitable licence'}
             lc = false
