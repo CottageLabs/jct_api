@@ -30,6 +30,9 @@ jct_agreement = new API.collection {index:"jct",type:"agreement"}
 jct_compliance = new API.collection {index:"jct",type:"compliance"}
 jct_unknown = new API.collection {index:"jct",type:"unknown"}
 
+#jct_compliance.remove '*'
+#jct_unknown.remove '*'
+
 # define the jct service object in the overall API
 API.service ?= {}
 API.service.jct = {}
@@ -77,11 +80,12 @@ API.add 'service/jct/unknown/:start/:end',
     else
       q = '*'
     for un in unks = jct_unknown.fetch q
-      res.push route: un.route, params: un._id.replace(/_/g,', '), log: un.log
+      params = un._id.split '_'
+      res.push route: un.route, issn: params[1], funder: params[0], ror: params[2], log: un.log
     return res
 
 API.add 'service/jct/compliance', () -> return jct_compliance.search this
-API.add 'service/jct/compliant', () -> return API.service.jct.compliance this.queryParams.funder, this.queryParams.journal, this.queryParams.institution, this.queryParams.refresh, this.queryParams.noncompliant ? false
+API.add 'service/jct/compliant', () -> return API.service.jct.compliance this.queryParams.funder, this.queryParams.journal, this.queryParams.institution, this.queryParams.retention, this.queryParams.checks, this.queryParams.refresh, this.queryParams.noncompliant ? false
 
 API.add 'service/jct/journal', () -> return academic_journal.search this # should journals be restricted to only those of the 200 publishers plan S wish to focus on?
 
@@ -158,7 +162,7 @@ API.add 'service/jct/ta/import',
 API.add 'service/jct/tj', # allow dump of all TJ?
   csv: true
   get: () -> return API.service.jct.tj this.queryParams.issn, this.queryParams.refresh
-API.add 'service/jct/tj/:issn', get: () -> return API.service.jct.tj this.urlParams.issn , this.queryParams.refresj
+API.add 'service/jct/tj/:issn', get: () -> return API.service.jct.tj this.urlParams.issn , this.queryParams.refresh
 
 API.add 'service/jct/doaj', 
   csv: true
@@ -186,7 +190,7 @@ API.service.jct.feedback = (params={}) ->
       from: if params.email.indexOf('@') isnt -1 and params.email.indexOf('.') isnt -1 then params.email else 'nobody@cottagelabs.com'
       to:  'jct@cottagelabs.zendesk.com' #'jct@cottagelabs.com'
       subject: params.subject ? params.feedback.substring(0,100) + if params.feedback.length > 100 then '...' else ''
-      text: params.feedback + '\n\n' + (if params.subject then '' else JSON.stringify params, '', 2)
+      text: (if API.settings.dev then '(dev)\n\n' else '') + params.feedback + '\n\n' + (if params.subject then '' else JSON.stringify params, '', 2)
     return true
   else
     return false
@@ -276,30 +280,39 @@ Meteor.setTimeout (() -> API.service.jct.unknown(undefined, undefined, undefined
 
 # check to see if we already know if a given set of entities is compliant
 # and if so, check if that compliance is still valid now
-API.service.jct.compliance = (funder, journal, institution, refresh=86400000, noncompliant=true) ->
-  # funder # funder has no effect on decision at the moment, so can re-use any compliance that matches the other one or two
-  qr = if journal then 'issn.exact:"' + journal + '"' else ''
+API.service.jct.compliance = (funder, journal, institution, retention, checks=['permission', 'doaj', 'ta', 'tj'], refresh=86400000, noncompliant=true) ->
+  checks = checks.split(',') if typeof checks is 'string'
+  results = []
+  return results if refresh is true or refresh is 0
+  qr = if journal then 'journal.exact:"' + journal + '"' else ''
   if institution
-    qr += ' AND ' if qr isnt ''
-    qr += 'ror.exact:"' + institution + '"'
+    qr += ' OR ' if qr isnt ''
+    qr += 'institution.exact:"' + institution + '"'
+  if funder
+    qr += ' OR ' if qr isnt ''
+    qr += 'funder.exact:"' + funder + '"'
   if qr isnt ''
-    qr += ' AND NOT cache:true AND createdAt:>' + Date.now() - refresh
+    qr = '(' + qr + ')' if qr.indexOf(' OR ') isnt -1
+    qr += ' AND retention:' + retention if retention?
+    qr += ' AND compliant:true' if noncompliant isnt true
+    #qr += ' AND NOT cache:true'
+    if refresh isnt false
+      qr += ' AND createdAt:>' + Date.now() - (if typeof refresh is 'number' then refresh else 0)
     # get the most recent non-cached calculated compliances for this set of entities
-    pre = jct_compliance.find qr
-    # if there are any results, or a calculation returned no results within 1 day (default), re-use it if possible
-    if pre?
-      if not pre.results? or not pre.results.length
-        return pre # return the empty result set?
-      else
-        for r in pre.results
-          delete r.started
-          delete r.ended
-          delete r.took
-          #r.cache = pre.createdAt TODO what is worth changing / returning here
-        pre.results = nr
-        return pre
-  else
-    return undefined
+    found = []
+    for pre in jct_compliance.fetch qr, true
+      if found.length is checks.length
+        break
+      if pre?.results? and pre.results.length
+        for pr in pre.results
+          if pr.route not in found and ((pr.route in ['tj','fully_oa'] and pr.issn is journal) or (pr.route is 'ta'and pr.issn is journal and pr.ror is institution) or (pr.route is 'self_archiving' and pr.issn is journal and pr.ror is institution and pr.funder is funder))
+            delete pr.started
+            delete pr.ended
+            delete pr.took
+            pr.cache = true
+            found.push(pr.route) if pr.route not in found
+            results.push pr
+  return results
 
 
   
@@ -358,39 +371,39 @@ API.service.jct.calculate = (params={}, refresh, checks=['permission', 'doaj', '
     cr = permission: ('permission' in checks), doaj: ('doaj' in checks), ta: ('ta' in checks), tj: ('tj' in checks)
 
     # look for cached results for the same values in jct_compliance - if found, use them, and don't recheck permission types already found there
-    pre = undefined #if refresh in [true,0] then undefined else API.service.jct.compliance funder, journal, institution, refresh
-    if pre?
-      hascompliant = pre.compliant
-      for pr in pre.results ? []
+    try
+      for pr in pre = API.service.jct.compliance funder, journal, institution, retention, checks, refresh
+        hascompliant = true if pr.compliant is 'yes'
         cr[if pr.route is 'fully_oa' then 'doaj' else if pr.route is 'self_archiving' then 'permission' else pr.route] = false
         _results.push pr
 
     _rtn = {}
     _ck = (which) ->
       Meteor.setTimeout () ->
-        #try
-        if rs = API.service.jct[which] journal, (if institution? and which in ['permission','ta'] then institution else undefined)
-          for r in (if _.isArray(rs) then rs else [rs])
-            hascompliant = true if r.compliant is 'yes'
-            if which is 'permission' and r.compliant isnt 'yes' and retention
-              # new change: only check retention if the funder allows it - and only if there IS a funder?
-              # funder allows if their rights retention date 
-              if funder? and fndr = API.service.jct.funders funder
-                if fndr.retentionAt? and (fndr.retentionAt is 1609459200000 or fndr.retentionAt >= Date.now())
-                  # retention is a special case on permissions, done this way so can be easily disabled for testing
-                  _rtn[journal] ?= API.service.jct.retention journal
-                  r.compliant = _rtn[journal].compliant
-                  hascompliant = true if r.compliant is 'yes'
-                  r.log.push(lg) for lg in _rtn[journal].log
-                  if _rtn[journal].qualifications? and _rtn[journal].qualifications.length
-                    r.qualifications ?= []
-                    r.qualifications.push(ql) for ql in _rtn[journal].qualifications
-            if r.compliant is 'unknown'
-              API.service.jct.unknown r, funder, journal, institution
-            _results.push r
-        cr[which] = Date.now()
-        #catch
-        #  cr[which] = false
+        try
+          if rs = API.service.jct[which] journal, (if institution? and which in ['permission','ta'] then institution else undefined)
+            for r in (if _.isArray(rs) then rs else [rs])
+              hascompliant = true if r.compliant is 'yes'
+              if which is 'permission' and r.compliant isnt 'yes' and retention
+                # new change: only check retention if the funder allows it - and only if there IS a funder
+                # funder allows if their rights retention date 
+                if funder? and fndr = API.service.jct.funders funder
+                  r.funder = funder
+                  if fndr.retentionAt? and (fndr.retentionAt is 1609459200000 or fndr.retentionAt >= Date.now())
+                    # retention is a special case on permissions, done this way so can be easily disabled for testing
+                    _rtn[journal] ?= API.service.jct.retention journal
+                    r.compliant = _rtn[journal].compliant
+                    hascompliant = true if r.compliant is 'yes'
+                    r.log.push(lg) for lg in _rtn[journal].log
+                    if _rtn[journal].qualifications? and _rtn[journal].qualifications.length
+                      r.qualifications ?= []
+                      r.qualifications.push(ql) for ql in _rtn[journal].qualifications
+              if r.compliant is 'unknown'
+                API.service.jct.unknown r, funder, journal, institution
+              _results.push r
+          cr[which] = Date.now()
+        catch
+          cr[which] = false
       , 1
     for c in checks
       _ck(c) if cr[c]
@@ -400,8 +413,9 @@ API.service.jct.calculate = (params={}, refresh, checks=['permission', 'doaj', '
       Meteor.setTimeout (() -> future.return()), 100
       future.wait()
     res.compliant = true if hascompliant
-    # store a new set of results every time without removing old ones, to keep track of incoming request amounts
-    jct_compliance.insert journal: journal, funder: funder, institution: institution, rq: rq, checks: checks, compliant: hascompliant, cache: (if pre? then true else false), results: _results
+    try
+      # store a new set of results every time without removing old ones, to keep track of incoming request amounts
+      jct_compliance.insert journal: journal, funder: funder, institution: institution, retention: retention, rq: rq, checks: checks, compliant: hascompliant, cache: (if pre? then true else false), results: _results
     res.results.push(rs) for rs in _results
 
     checked += 1
@@ -610,13 +624,13 @@ API.service.jct.ta.import = (mail=true) ->
     API.mail.send
       from: 'nobody@cottagelabs.com'
       to: 'jct@cottagelabs.com'
-      subject: 'JCT TA import complete'
+      subject: 'JCT TA import complete' + (if API.settings.dev then ' (dev)' else '')
       text: JSON.stringify res, '', 2
     if bads.length
       API.mail.send
         from: 'nobody@cottagelabs.com'
         to: 'jct@cottagelabs.com'
-        subject: 'JCT TA import found ' + bads.length + ' bad ISSNs'
+        subject: 'JCT TA import found ' + bads.length + ' bad ISSNs' + (if API.settings.dev then ' (dev)' else '')
         text: JSON.stringify bads, '', 2
   return res
 
@@ -723,12 +737,15 @@ API.service.jct.retention = (journal, refresh) ->
       log: [{action: 'Check for author rights retention', result: 'Rights retention not found, so default compliant'}]
     for ret in rets
       if journal in ret.issn
-        delete res.qualifications
         if ret.position is 5 # if present and 5, not compliant
+          delete res.qualifications
           res.log[0].result = 'Rights retention number ' + ret.position + ' so not compliant'
           res.compliant = 'no'
         else
           res.log[0].result = 'Rights retention number ' + ret.position + ' so compliant' #, but check funder qualifications if any'
+          # for some reason, we now leave the same author advice that the journal does not appear in the data source even if the 
+          # data source is the thing telling us the number is 1 to 4... that's what was asked so that is what I will do.
+          # https://github.com/antleaf/jct-project/issues/215#issuecomment-726761965
           # if present and any other number, or no answer, then compliant with some funder quals - so what funder quals to add?
           # no funder quals now due to change at end of October 2020. May be introduced again later
         break
@@ -749,10 +766,12 @@ API.service.jct.permission = (journal, institution) ->
     compliant: 'unknown'
     qualifications: undefined
     issn: journal
+    ror: institution
+    funder: undefined
     log: [{action: 'Check Open Access Button Permissions for journal'}]
 
   try
-    perms = API.service.oab.permission issn: journal, ror: institution
+    perms = API.service.oab.permission {issn: journal, ror: institution}, undefined, undefined, undefined, undefined, false
     if perms.best_permission?
       res.compliant = 'no' # set to no until a successful route through is found
       pb = perms.best_permission
@@ -767,7 +786,7 @@ API.service.jct.permission = (journal, institution) ->
           # and Embargo is zero
           if typeof pb.embargo_months is 'string'
             try pb.embargo_months = parseInt pb.embargo_months
-          if typeof pb.embargo_months is 'number' and pb.embargo_months isnt 0
+          if typeof pb.embargo_months isnt 'number' or pb.embargo_months is 0
             res.log[3].result = 'There is no embargo period'
             res.log.push {action: 'Check there is a suitable licence'}
             lc = false
@@ -784,7 +803,7 @@ API.service.jct.permission = (journal, institution) ->
             else
               res.log[4].result = 'No suitable licence found'
           else
-            res.log[3].result = 'There is an embargo until ' + res.embargo_end
+            res.log[3].result = 'There is an embargo period of ' + pb.embargo_months + ' months'
         else
           res.log[2].result = 'It is not possible to archive postprint or publisher PDF'
       else
@@ -1016,6 +1035,7 @@ API.service.jct.funders = (id,refresh) ->
         res = e
         break
   return res
+Meteor.setTimeout API.service.jct.funders, 6000 # get the funders at every startup
 
 
   
@@ -1046,7 +1066,7 @@ API.service.jct.import = (params={}) ->
   API.mail.send
     from: 'nobody@cottagelabs.com'
     to: 'jct@cottagelabs.com'
-    subject: 'JCT import complete'
+    subject: 'JCT import complete' + (if API.settings.dev then ' (dev)' else '')
     text: JSON.stringify res, '', 2
   return res
   
