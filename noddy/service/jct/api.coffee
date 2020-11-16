@@ -575,6 +575,8 @@ API.service.jct.ta.import = (mail=true) ->
     if typeof ov?['Data URL'] is 'string' and ov['Data URL'].trim().indexOf('http') is 0 and ov?['End Date']? and moment(ov['End Date'].trim(), 'YYYY-MM-DD').valueOf() > Date.now()
       res.ready += 1
       src = ov['Data URL'].trim()
+      console.log res
+      console.log src
       for rec in API.convert.csv2json src
         for e of rec # get rid of empty things
           delete rec[e] if not rec[e]
