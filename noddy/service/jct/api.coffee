@@ -732,7 +732,7 @@ API.service.jct.retention = (journal, refresh) ->
       took: undefined
       route: 'retention' # this is actually only used as a subset of OAB permission self_archiving so far
       compliant: 'yes' # if not present then compliant but with author and funder quals - so what are the default funder quals?
-      qualifications: [{'rights_retention_author_advice': 'The journal does not appear in the rights retention data source'}]
+      qualifications: [{'rights_retention_author_advice': ''}]
       issn: journal
       log: [{action: 'Check for author rights retention', result: 'Rights retention not found, so default compliant'}]
     for ret in rets
