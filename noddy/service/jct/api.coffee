@@ -507,30 +507,34 @@ API.service.jct.ta = (issn, ror, at) ->
     tas.push res
   return if tas.length is 1 then tas[0] else tas
 
-API.service.jct.ta._esac = false
+#API.service.jct.ta._esac = false
 API.service.jct.ta.esac = (id,refresh) ->
   res = []
-  if API.service.jct.ta._esac isnt false and refresh isnt true
-    res = API.service.jct.ta._esac
+  #if API.service.jct.ta._esac isnt false and refresh isnt true
+  #  res = API.service.jct.ta._esac
+  if refresh isnt true and refresh isnt 0 and cached = API.http.cache 'jct', 'esac', undefined, refresh
+    res = cached
   else
-    for r in API.convert.table2json API.http.puppeteer 'https://esac-initiative.org/about/transformative-agreements/agreement-registry/'
-      rec =
-        publisher: r.Publisher.trim()
-        country: r.Country.trim()
-        organization: r.Organization.trim()
-        size: r["Annual publications"].trim()
-        start_date: r["Start date"].trim()
-        end_date: r["End date"].trim()
-        id: r["Details/ ID"].trim()
-      rec.url = 'https://esac-initiative.org/about/transformative-agreements/agreement-registry/' + rec.id
-      rec.startAt = moment(rec.start_date, 'MM/DD/YYYY').valueOf()
-      rec.endAt = moment(rec.end_date, 'MM/DD/YYYY').valueOf()
-      try
-        rs = parseInt rec.size
-        if typeof rs is 'number' and not isNaN rs
-          rec.size = sz
-      res.push rec
-    API.service.jct.ta._esac = res
+    try
+      for r in API.convert.table2json API.http.puppeteer 'https://esac-initiative.org/about/transformative-agreements/agreement-registry/'
+        rec =
+          publisher: r.Publisher.trim()
+          country: r.Country.trim()
+          organization: r.Organization.trim()
+          size: r["Annual publications"].trim()
+          start_date: r["Start date"].trim()
+          end_date: r["End date"].trim()
+          id: r["Details/ ID"].trim()
+        rec.url = 'https://esac-initiative.org/about/transformative-agreements/agreement-registry/' + rec.id
+        rec.startAt = moment(rec.start_date, 'MM/DD/YYYY').valueOf()
+        rec.endAt = moment(rec.end_date, 'MM/DD/YYYY').valueOf()
+        try
+          rs = parseInt rec.size
+          if typeof rs is 'number' and not isNaN rs
+            rec.size = sz
+        res.push rec
+      #API.service.jct.ta._esac = res
+      API.http.cache 'jct', 'esac', res
 
   if id?
     res = undefined
@@ -993,41 +997,46 @@ API.service.jct.doaj = (issn, refresh=864000000) ->
 
 
 # https://www.coalition-s.org/plan-s-funders-implementation/
-API.service.jct._funders = false
+#API.service.jct._funders = false
 API.service.jct.funders = (id,refresh) ->
   res = []
-  if API.service.jct._funders isnt false and refresh isnt true
-    res = API.service.jct._funders
+
+  #if API.service.jct._funders isnt false and refresh isnt true
+  #  res = API.service.jct._funders
+  if refresh isnt true and refresh isnt 0 and cached = API.http.cache 'jct', 'funders', undefined, refresh
+    res = cached
   else
-    for r in API.convert.table2json API.http.puppeteer 'https://www.coalition-s.org/plan-s-funders-implementation/'
-      rec = 
-        funder: r['cOAlition S organisation (funder)']
-        launch: r['Launch date for implementing  Plan S-aligned OA policy']
-        application: r['Application of Plan S principles ']
-        retention: r['Rights Retention Strategy Implementation']
-      for k of rec
-        if rec[k]?
-          rec[k] = rec[k].trim()
-          if rec[k].indexOf('<a') isnt -1
-            rec.url ?= []
-            rec.url.push rec[k].split('href')[1].split('=')[1].split('"')[1]
-            rec[k] = (rec[k].split('<')[0] + rec[k].split('>')[1].split('<')[0] + rec[k].split('>').pop()).trim()
-        else
-          delete rec[k]
-      if rec.retention
-        if rec.retention.indexOf('Note:') isnt -1
+    try
+      for r in API.convert.table2json API.http.puppeteer 'https://www.coalition-s.org/plan-s-funders-implementation/'
+        rec = 
+          funder: r['cOAlition S organisation (funder)']
+          launch: r['Launch date for implementing  Plan S-aligned OA policy']
+          application: r['Application of Plan S principles ']
+          retention: r['Rights Retention Strategy Implementation']
+        for k of rec
+          if rec[k]?
+            rec[k] = rec[k].trim()
+            if rec[k].indexOf('<a') isnt -1
+              rec.url ?= []
+              rec.url.push rec[k].split('href')[1].split('=')[1].split('"')[1]
+              rec[k] = (rec[k].split('<')[0] + rec[k].split('>')[1].split('<')[0] + rec[k].split('>').pop()).trim()
+          else
+            delete rec[k]
+        if rec.retention
+          if rec.retention.indexOf('Note:') isnt -1
+            rec.notes ?= []
+            rec.notes.push rec.retention.split('Note:')[1].replace(')','').trim()
+            rec.retention = rec.retention.split('Note:')[0].replace('(','').trim()
+          rec.retentionAt = moment('01012021','DDMMYYYY').valueOf() if rec.retention.toLowerCase().indexOf('early adopter') isnt -1
+        try rec.startAt = moment(rec.launch, 'Do MMMM YYYY').valueOf()
+        delete rec.startAt if JSON.stringify(rec.startAt) is 'null'
+        if not rec.startAt? and rec.launch?
           rec.notes ?= []
-          rec.notes.push rec.retention.split('Note:')[1].replace(')','').trim()
-          rec.retention = rec.retention.split('Note:')[0].replace('(','').trim()
-        rec.retentionAt = moment('01012021','DDMMYYYY').valueOf() if rec.retention.toLowerCase().indexOf('early adopter') isnt -1
-      try rec.startAt = moment(rec.launch, 'Do MMMM YYYY').valueOf()
-      delete rec.startAt if JSON.stringify(rec.startAt) is 'null'
-      if not rec.startAt? and rec.launch?
-        rec.notes ?= []
-        rec.notes.push rec.launch
-      try rec.id = rec.funder.toLowerCase().replace(/[^a-z0-9]/g,'')
-      res.push(rec) if rec.id?
-    API.service.jct._funders = res
+          rec.notes.push rec.launch
+        try rec.id = rec.funder.toLowerCase().replace(/[^a-z0-9]/g,'')
+        res.push(rec) if rec.id?
+      #API.service.jct._funders = res
+      API.http.cache 'jct', 'funders', res
 
   if id?
     for e in res
