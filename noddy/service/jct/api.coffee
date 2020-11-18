@@ -86,6 +86,10 @@ API.add 'service/jct/unknown/:start/:end',
 
 API.add 'service/jct/compliance', () -> return jct_compliance.search this
 API.add 'service/jct/compliant', () -> return API.service.jct.compliance this.queryParams.funder, this.queryParams.journal, this.queryParams.institution, this.queryParams.retention, this.queryParams.checks, this.queryParams.refresh, this.queryParams.noncompliant ? false
+API.add 'service/jct/compliance/clear', 
+  get: 
+    roleRequired: if API.settings.dev then undefined else 'root'
+    action: () -> return jct_compliance.remove '*'
 
 API.add 'service/jct/journal', () -> return academic_journal.search this # should journals be restricted to only those of the 200 publishers plan S wish to focus on?
 
@@ -288,6 +292,8 @@ API.service.jct.compliance = (funder, journal, institution, retention, checks=['
   if institution
     qr += ' OR ' if qr isnt ''
     qr += 'institution.exact:"' + institution + '"'
+  # For now, since retention checks can't return anything anyway, there's no point searching by funder
+  # so this could be disabled... won't do it yet, but keep here as a possibility, and see below loop over results
   if funder
     qr += ' OR ' if qr isnt ''
     qr += 'funder.exact:"' + funder + '"'
@@ -306,6 +312,19 @@ API.service.jct.compliance = (funder, journal, institution, retention, checks=['
       if pre?.results? and pre.results.length
         for pr in pre.results
           if pr.route not in found and ((pr.route in ['tj','fully_oa'] and pr.issn is journal) or (pr.route is 'ta'and pr.issn is journal and pr.ror is institution) or (pr.route is 'self_archiving' and pr.issn is journal and pr.ror is institution and pr.funder is funder))
+            # for now, since retention checks can't return anything, just set whatever would have been the default
+            # NOTE that the above "if" check should comment out the funder match at the end too, if funder matches are not necessary yet
+            '''if pr.route is 'self_archiving'
+              try
+                if retention and funder? and fr = API.service.jct.funders funder
+                  pr.qualifications = [{rights_retention_author_advice: ''}]
+                  pr.log ?= []
+                  if pr.log.length is 0 or pr.log[pr.log.length-1].action isnt 'Check for author rights retention'
+                    pr.log.push {action: 'Check for author rights retention', result: 'Rights retention not found, so default compliant'}
+                else
+                  pr.qualifications = []
+                  pr.log.pop() if pr.log? and pr.log.length and pr.log[pr.log.length-1].action is 'Check for author rights retention'
+            '''
             delete pr.started
             delete pr.ended
             delete pr.took
@@ -712,24 +731,25 @@ API.service.jct.tj = (issn, refresh=86400000) -> # refresh each day?
 # rights_retention_funder_implementation - the journal does not have an SA policy and the funder has a rights retention policy that starts in the future. There should be one record of this per funder that meets the conditions, and the following qualification specific data is requried:
 # funder: <funder name>
 # date: <date policy comes into force (YYYY-MM-DD)
-API.service.jct._retention = false
 API.service.jct.retention = (journal, refresh) ->
   # check the rights retention data source once it exists if the record is not in OAB
   # for now this is not used directly, just a fallback to something that is not in OAB
   # will be a list of journals by ISSN and a number 1,2,3,4,5
   # import them if not yet present (and probably do some caching)
   rets = []
-  if API.service.jct._retention isnt false and refresh isnt true
-    rets = API.service.jct._retention
+  if refresh isnt true and refresh isnt 0 and cached = API.http.cache 'jct', 'retention', undefined, refresh
+    rets = cached
   else
-    for rt in API.convert.csv2json 'https://docs.google.com/spreadsheets/d/e/2PACX-1vTVZwZtdYSUFfKVRGO3jumQcLEjtnbdbw7yJ4LvfC2noYn3IwuTDjA9CEjzSaZjX8QVkWijqa3rmicY/pub?gid=0&single=true&output=csv'
-      rt.journal = rt['Journal Name'].trim() if typeof rt['Journal Name'] is 'string'
-      rt.issn = []
-      rt.issn.push(rt['ISSN (print)'].trim()) if typeof rt['ISSN (print)'] is 'string' and rt['ISSN (print)'].length
-      rt.issn.push(rt['ISSN (online)'].trim()) if typeof rt['ISSN (online)'] is 'string'and rt['ISSN (online)'].length
-      rt.position = if typeof rt.Position is 'number' then rt.Position else parseInt rt.Position.trim()
-      rt.publisher = rt.Publisher.trim() if typeof rt.Publisher is 'string'
-      rets.push(rt) if rt.issn.length and rt.position? and typeof rt.position is 'number' and rt.position isnt null and not isNaN rt.position
+    try
+      for rt in API.convert.csv2json 'https://docs.google.com/spreadsheets/d/e/2PACX-1vTVZwZtdYSUFfKVRGO3jumQcLEjtnbdbw7yJ4LvfC2noYn3IwuTDjA9CEjzSaZjX8QVkWijqa3rmicY/pub?gid=0&single=true&output=csv'
+        rt.journal = rt['Journal Name'].trim() if typeof rt['Journal Name'] is 'string'
+        rt.issn = []
+        rt.issn.push(rt['ISSN (print)'].trim()) if typeof rt['ISSN (print)'] is 'string' and rt['ISSN (print)'].length
+        rt.issn.push(rt['ISSN (online)'].trim()) if typeof rt['ISSN (online)'] is 'string'and rt['ISSN (online)'].length
+        rt.position = if typeof rt.Position is 'number' then rt.Position else parseInt rt.Position.trim()
+        rt.publisher = rt.Publisher.trim() if typeof rt.Publisher is 'string'
+        rets.push(rt) if rt.issn.length and rt.position? and typeof rt.position is 'number' and rt.position isnt null and not isNaN rt.position
+      API.http.cache 'jct', 'retention', rets
 
   if journal
     res =

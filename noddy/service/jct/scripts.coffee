@@ -1,4 +1,6 @@
 
+import Future from 'fibers/future'
+
 # ones that really do not seem to exist in crossref with an issn
 # archive of formal proofs is not a journal and does not appear in crossref, although does have issn 2150-914x
 # achemenet
@@ -144,3 +146,74 @@ API.add 'service/jct/scripts/review',
     delete res.missing
     _jct_review_result = res
     return res
+
+
+
+API.add 'service/jct/scripts/trial', 
+  get:
+    roleRequired: if API.settings.dev then undefined else 'root'
+    action: () -> 
+      q = this.queryParams.q ? 'publisher:"wiley"'
+      delay = this.queryParams.delay ? 20
+      size = this.queryParams.size ? 500
+      from = this.queryParams.from ? 0
+      cf = this.queryParams.cf ? true
+      verbose = this.queryParams.verbose ? false
+      refresh = this.queryParams.refresh
+
+      target = false
+      results = []
+      compliant = 0
+      fails = 0
+
+      _get = (issn) ->
+        _dget = (issn) ->
+          try
+            cr = HTTP.call 'GET', 'https://' + (if cf then 'api.journalcheckertool.org' else 'api.cottagelabs.com/service/jct') + '/calculate?issn=' + issn + (if refresh then '&refresh=true' else '')
+            cm = if typeof cr.content is 'string' then JSON.parse(cr.content) else cr.content
+            results.push if verbose then cr else cm.compliant
+            compliant += 1 if cm.compliant is true
+          catch
+            fails += 1
+          console.log results.length, fails
+        if typeof issn is 'string' and issn
+          Meteor.setTimeout (() -> _dget issn), 1
+        else
+          fails += 1
+
+      _trial = () ->
+        started = Date.now()
+        pbs = academic_journal.search q, {size: size, from: from}
+        if target is false
+          target = pbs?.hits?.total ? 0
+          target = size if size < target
+        for h in pbs?.hits?.hits ? []
+          future = new Future()
+          Meteor.setTimeout (() -> future.return()), delay
+          future.wait()
+          try
+            rec = h._source
+            if rec.issn? and rec.issn.length
+              anissn = if typeof rec.issn is 'string' then rec.issn else rec.issn[0]
+              _get anissn
+            else
+              fails += 1
+          catch
+            fails += 1
+
+        while target is false or target > (results.length + fails)
+          future = new Future()
+          Meteor.setTimeout (() -> future.return()), 500
+          future.wait()
+
+        ended = Date.now()
+        console.log 'JCT trial done'
+        
+        API.mail.send
+          from: 'alert@cottagelabs.com'
+          to: 'alert@cottagelabs.com'
+          subject: 'JCT trial complete'
+          text: 'Got ' + results.length + ' results (' + compliant + ' compliant) out of ' + target + ' with ' + delay + 'ms delay, in ' + (ended-started) + 'ms. \n\n' + JSON.stringify results
+        
+      Meteor.setTimeout _trial, 1
+      return true
