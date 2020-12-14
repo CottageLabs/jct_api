@@ -1,0 +1,106 @@
+
+limit_req_zone $http_cf_connecting_ip zone=jct:100m rate=10r/s;
+limit_conn_status 429;
+limit_req_status 429;
+
+server {
+    listen      80;
+    server_name api.journalcheckertool.org;
+    return 301 https://api.journalcheckertool.org$request_uri;
+}
+server {
+    listen      80;
+    server_name journalcheckertool.org;
+    return 301 https://journalcheckertool.org$request_uri;
+}
+
+server {
+    listen      80;
+    server_name www.journalcheckertool.org;
+    return 301 https://journalcheckertool.org$request_uri;
+}
+
+server {
+    listen      443;
+    server_name www.journalcheckertool.org;
+    return 301 https://journalcheckertool.org$request_uri;
+}
+
+server {
+  listen 443 ssl;
+  server_name journalcheckertool.org;
+  root /home/cloo/live/jct/jct;
+
+  error_log /var/log/nginx/jct_error.log;
+  access_log /var/log/nginx/jct_access.log;
+
+  ssl on;
+  ssl_certificate /etc/letsencrypt/live/journalcheckertool.org/fullchain.pem;
+  ssl_certificate_key /etc/letsencrypt/live/journalcheckertool.org/privkey.pem;
+  ssl_protocols TLSv1 TLSv1.1 TLSv1.2;
+  ssl_ciphers "HIGH:!aNULL:!MD5 or HIGH:!aNULL:!MD5:!3DES";
+  ssl_prefer_server_ciphers on;
+  ssl_stapling on;
+  add_header Strict-Transport-Security "max-age=31536000;";
+
+  add_header Pragma public;
+  add_header Cache-Control "public";
+  add_header Access-Control-Allow-Origin *;
+
+  location ^~ /.well-known/acme-challenge/ {
+    default_type "text/plain";
+    root /var/www/letsencrypt;
+  }
+  location = /.well-known/acme-challenge/ {
+    return 404;
+  }
+
+  location / {
+    #try_files /content/coming-soon.html =404;
+    try_files /serve/$uri.html /serve/$uri/index.html /content/$uri.html /content/$uri/index.html /serve/404.html =404;
+  }
+  #location /content {
+  #  try_files $uri $uri.html $uri.md $uri/index $uri/index.html $uri/index.md =404;
+  #}
+  location /static {
+    try_files /serve/$uri $uri =404;
+    expires 30d;
+  }
+}
+
+server {
+    listen          443 ssl;
+    server_name     api.journalcheckertool.org;
+
+    error_log /var/log/nginx/jct_api_error.log;
+    access_log /var/log/nginx/jct_api_access.log;
+
+    ssl on;
+    ssl_certificate /etc/letsencrypt/live/api.journalcheckertool.org/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/api.journalcheckertool.org/privkey.pem;
+    ssl_protocols TLSv1 TLSv1.1 TLSv1.2;
+    ssl_ciphers "HIGH:!aNULL:!MD5 or HIGH:!aNULL:!MD5:!3DES";
+    ssl_prefer_server_ciphers on;
+    ssl_stapling on;
+    add_header Strict-Transport-Security "max-age=31536000;";
+
+    location ^~ /.well-known/acme-challenge/ {
+        default_type "text/plain";
+        root /var/www/letsencrypt;
+    }
+    location = /.well-known/acme-challenge/ {
+        return 404;
+    }
+
+    location / {
+        limit_req zone=jct burst=6000; # could also add nodelay to this, so anything after the limit immediately gets 503. Without that, later requests just wait
+
+        proxy_pass http://noddy_jct/api/service/jct/;
+        add_header Access-Control-Allow-Methods 'GET, PUT, POST, DELETE, OPTIONS';
+        add_header Access-Control-Allow-Headers 'X-apikey,X-id,DNT,Keep-Alive,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type';
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_set_header X-Forwarded-For $remote_addr;
+    }
+}

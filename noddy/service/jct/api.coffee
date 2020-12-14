@@ -64,7 +64,7 @@ API.add 'service/jct/tj/:issn',
 
 API.add 'service/jct/funder', 
   csv: true
-  get: () -> return API.service.jct.funders()
+  get: () -> return API.service.jct.funders undefined, this.queryParams.refresh
 API.add 'service/jct/funder/:iid', get: () -> return API.service.jct.funders this.urlParams.iid
 
 API.add 'service/jct/feedback',
@@ -809,7 +809,7 @@ API.service.jct.funders = (id,refresh) ->
           rec.notes.push rec.launch
         try rec.id = rec.funder.toLowerCase().replace(/[^a-z0-9]/g,'')
         res.push(rec) if rec.id?
-      API.http.cache 'jct', 'funders', res
+      API.http.cache('jct', 'funders', res) if res.length
 
   if id?
     for e in res
