@@ -3,6 +3,8 @@ import moment from 'moment'
 import Future from 'fibers/future'
 import { Random } from 'meteor/random'
 import unidecode from 'unidecode'
+import json2csv from 'json2csv'
+import stream from 'stream'
 
 '''
 The JCT API is a plugin for the noddy API stack. This API defines 
@@ -70,16 +72,20 @@ API.add 'service/jct/feedback',
 
 # and some administrative ones
 API.add 'service/jct/import', 
-  get: 
-    roleRequired: if API.settings.dev then undefined else 'jct.admin'
-    action: () -> 
-      Meteor.setTimeout (() => API.service.jct.import this.queryParams), 1
-      return true
+  get: () -> 
+    Meteor.setTimeout (() => API.service.jct.import this.queryParams), 1
+    return true
 
 API.add 'service/jct/unknown', get: () -> return jct_unknown.search this.queryParams
 API.add 'service/jct/unknown/:start/:end', 
   get: () -> 
-    # TODO convert this to return a csv if URL ends with .csv, not using the old built-in method to do that
+    csv = false
+    if typeof this.urlParams.start is 'string' and this.urlParams.start.indexOf('.csv') isnt -1
+      this.urlParams.start = this.urlParams.start.replace('.csv','')
+      csv = true
+    else if typeof this.urlParams.end is 'string' and this.urlParams.end.indexOf('.csv') isnt -1
+      this.urlParams.end = this.urlParams.end.replace('.csv','')
+      csv = true
     res = []
     if typeof this.urlParams.start in ['number','string'] or typeof this.urlParams.end in ['number','string']
       q = if typeof this.urlParams.start in ['number','string'] then 'createdAt:>=' + this.urlParams.start else ''
@@ -91,7 +97,12 @@ API.add 'service/jct/unknown/:start/:end',
     for un in unks = jct_unknown.fetch q
       params = un._id.split '_'
       res.push route: un.route, issn: params[1], funder: params[0], ror: params[2], log: un.log
-    return res
+    if csv
+      fn = 'JCT_export_' + this.urlParams.start + (if this.urlParams.end then '_' + this.urlParams.end else '') + ".csv"
+      this.response.writeHead(200, {'Content-disposition': "attachment; filename=" + fn, 'Content-type': 'text/csv; charset=UTF-8', 'Content-Encoding': 'UTF-8'})
+      this.response.end API.service.jct.csv res
+    else
+      return res
 
 API.add 'service/jct/compliance', get: () -> return jct_compliance.search this.queryParams
 API.add 'service/jct/compliant', () -> return API.service.jct.compliance this.queryParams.funder, this.queryParams.journal, this.queryParams.institution, this.queryParams.retention, this.queryParams.checks, this.queryParams.refresh, this.queryParams.noncompliant ? false
@@ -163,7 +174,7 @@ API.service.jct.suggest = (which='journal', str, from, size=100) ->
         seen.push(ir) for ir in re.issn
       q = {query: {filtered: {query: {query_string: {query: 'issn.exact:*'}}, filter: {bool: {should: []}}}}, size: size}
       q.from = from if from?
-      if str
+      if str and str.replace(/\-/g,'').length
         if str.indexOf(' ') is -1
           if str.indexOf('-') isnt -1 and str.length is 9
             q.query.filtered.query.query_string.query = 'issn.exact:"' + str + '"'
@@ -465,7 +476,6 @@ API.service.jct.ta.import = (mail=true) ->
   res = sheets: 0, ready: 0, records: 0
   console.log 'starting ta import'
   for ov in API.convert.csv2json 'https://docs.google.com/spreadsheets/d/e/2PACX-1vStezELi7qnKcyE8OiO2OYx2kqQDOnNsDX1JfAsK487n2uB_Dve5iDTwhUFfJ7eFPDhEjkfhXhqVTGw/pub?gid=1130349201&single=true&output=csv'
-    console.log ov
     console.log 'imported main sheet'
     res.sheets += 1
     if typeof ov?['Data URL'] is 'string' and ov['Data URL'].trim().indexOf('http') is 0 and ov?['End Date']? and moment(ov['End Date'].trim(), 'YYYY-MM-DD').valueOf() > Date.now()
@@ -875,6 +885,25 @@ API.service.jct.feedback = (params={}) ->
     return true
   else
     return false
+
+
+API.service.jct.csv = (rows) ->
+  # an odd use of a stream here, passing it what is already a variable. But this 
+  # avoids json2csv OOM errors which seem to occur even if the memory is not all used
+  tf = new json2csv.Transform {}
+  res = ''
+  rs = new stream.Readable
+  rs.push JSON.stringify rows
+  rs.push null
+  rs.pipe tf
+  done = false
+  tf.on 'data', (chunk) -> res += chunk
+  tf.on 'end', () -> done = true
+  while not done
+    future = new Future()
+    Meteor.setTimeout (() -> future.return()), 500
+    future.wait()
+  return res
 
 
 API.service.jct.test = (params={}) ->
