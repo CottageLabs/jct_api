@@ -1,4 +1,6 @@
 
+'''
+
 import Future from 'fibers/future'
 
 # ones that really do not seem to exist in crossref with an issn
@@ -30,6 +32,7 @@ import Future from 'fibers/future'
 # Society of Photo-Optical Instrumentation Engineers same as SPIE
 # US Department of Health and Human Services does not publish journals
 # dagstuhl publishing is a journal publisher but all OA
+
 
 _jct_review_result = false
 API.add 'service/jct/scripts/review', 
@@ -217,3 +220,5 @@ API.add 'service/jct/scripts/trial',
         
       Meteor.setTimeout _trial, 1
       return true
+
+'''

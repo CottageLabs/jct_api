@@ -6,12 +6,35 @@ limit_req_status 429;
 server {
     listen      80;
     server_name api.journalcheckertool.org;
-    return 301 https://api.journalcheckertool.org$request_uri;
+
+    location ^~ /.well-known/acme-challenge/ {
+        default_type "text/plain";
+        root /var/www/letsencrypt;
+    }
+    location = /.well-known/acme-challenge/ {
+        return 404;
+    }
+    #location /.well-known/acme-challenge/ {
+    #    allow all;
+    #    default_type text/plain;
+    #    root /var/www/letsencrypt;
+    #}
+    location / {
+        return 301 https://$host$request_uri;
+    }
 }
 server {
     listen      80;
     server_name journalcheckertool.org;
-    return 301 https://journalcheckertool.org$request_uri;
+
+    location /.well-known/acme-challenge/ {
+        allow all;
+        default_type text/plain;
+        root /var/www/letsencrypt;
+    }
+    location / {
+        return 301 https://$host$request_uri;
+    }
 }
 
 server {
