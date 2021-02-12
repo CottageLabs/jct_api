@@ -839,11 +839,9 @@ API.service.jct.journals.import = (refresh) ->
         upd = doaj: rec
         upd.indoaj = true
         upd.discontinued = true if rec.bibjson.discontinued_date
-        nissns = []
-        nissns.push(rec.bibjson.pissn.toUpperCase()) if typeof rec.bibjson.pissn is 'string' and rec.bibjson.pissn.toUpperCase() not in nissns and rec.bibjson.pissn.toUpperCase() not in exists.issn
-        nissns.push(rec.bibjson.eissn.toUpperCase()) if typeof rec.bibjson.eissn is 'string' and rec.bibjson.eissn.toUpperCase() not in nissns and rec.bibjson.eissn.toUpperCase() not in exists.issn
-        if nissns.length
-          upd.issn = _.union exists.issn, nissns
+        upd.issn = [] # DOAJ ISSN data overrides crossref because we've seen errors in crossref that are correct in DOAJ such as 1474-9728
+        upd.issn.push(rec.bibjson.pissn.toUpperCase()) if typeof rec.bibjson.pissn is 'string' and rec.bibjson.pissn.length and rec.bibjson.pissn.toUpperCase() not in upd.issn
+        upd.issn.push(rec.bibjson.eissn.toUpperCase()) if typeof rec.bibjson.eissn is 'string' and rec.bibjson.eissn.length and rec.bibjson.eissn.toUpperCase() not in upd.issn
         jct_journal.update exists._id, upd
       else
         nr = doaj: rec, indoaj: true
