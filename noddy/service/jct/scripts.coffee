@@ -1,6 +1,53 @@
 
 '''
 
+API.add 'service/jct/scripts/institutions', 
+  get: () ->
+    size = 500
+    q = {query: {filtered: {query: {}, filter: {bool: {should: [
+      {term: {'snaks.property.exact':'P6782'}} # ROR ID
+    ]}}}}, size: size, _source: {includes: ['id','label','description','snaks.property','snaks.value','snaks.qid','sitelinks.enwiki.title']}}
+    q.query.filtered.query.match_all = {}
+    counter = 0
+    from = 0
+    total = false
+    batch = []
+    jct_institution.remove '*'
+    while total is false or from < total
+      q.from = from
+      res = wikidata_record.search q # convert this to a direct search of wikidata API, unless changing to maintain wikidata index or switching to ROR
+      if total is false
+        total = res?.hits?.total ? 0
+        console.log total
+      for r in res?.hits?.hits ? []
+        rec = title: r._source.label, values: [], wid: r._source.id
+        rec.alternate = r._source.sitelinks.enwiki.title if r._source.sitelinks?.enwiki?.title and r._source.sitelinks.enwiki.title isnt rec.title
+        rec.description = r._source.description if r._source.description and r._source.description isnt rec.title
+        for s in r._source.snaks
+          isno = false
+          try isno = s.value and not isNaN parseInt s.value
+          if typeof s.value is 'string' and s.value and s.value.substring(0,1) not in ["0","1","2","3","4","5","6","7","8","9"] and not s.value.startsWith('/') and not s.value.startsWith('grid.') and not s.value.startsWith('http') and not isno and s.value not in rec.values
+            # collect useful values to string match against for suggestions
+            rec.values.push s.value
+          rec.id ?= s.value if s.property is 'P6782'
+          if not rec.country and s.property is 'P17' and cwd = wikidata_record.get s.qid
+            rec.country = cwd.label
+        rec._id = rec.id
+        delete rec.values if not rec.values.length
+        console.log(rec) if rec._id is '01js4x705'
+        batch.push rec
+        counter += 1
+      if batch.length > 2000
+        jct_institution.insert batch
+        batch = []
+      from += size
+      console.log from, counter, total
+    if batch.length
+      jct_institution.insert batch
+    return counter
+
+
+
 import Future from 'fibers/future'
 
 # ones that really do not seem to exist in crossref with an issn
