@@ -12,8 +12,8 @@ import stream from 'stream'
 '''
 The JCT API was a plugin for the noddy API stack, however it has since been 
 separated out to a standalone app. It has the smallest amount of noddy code that 
-it required, and no more, to keep it simple for future mainteance as a separate 
-project. It is possible that the noddy codebase may have useful parts for future 
+it required, to keep it simple for future maintenance as a separate project. 
+It is possible that the old noddy codebase may have useful parts for future 
 development though, so consider having a look at it when new requirements come up.
 
 This API defines the routes needed to support the JCT UIs, and the admin feed-ins 
@@ -76,10 +76,15 @@ API.add 'service/jct/retention',
     Meteor.setTimeout (() => API.service.jct.retention this.queryParams.issn, this.queryParams.refresh), 1
     return true
 
+API.add 'service/jct/tj', get: () -> return jct_journal.search this.queryParams, {restrict: [{exists: {field: 'tj'}}]}
 API.add 'service/jct/tj/:issn', 
   get: () -> 
     res = API.service.jct.tj this.urlParams.issn
     return if res?.compliant isnt 'yes' then 404 else issn: this.urlParams.issn, transformative_journal: true
+API.add 'service/jct/tj/import', 
+  get: () -> 
+    Meteor.setTimeout (() => API.service.jct.tj undefined, true), 1
+    return true
 
 API.add 'service/jct/funder', get: () -> return API.service.jct.funders undefined, this.queryParams.refresh
 API.add 'service/jct/funder/:iid', get: () -> return API.service.jct.funders this.urlParams.iid
@@ -445,7 +450,7 @@ API.service.jct.ta = (issn, ror) ->
 API.service.jct.ta.import = (mail=true) ->
   bads = []
   records = []
-  res = sheets: 0, ready: 0, processed:0, records: 0
+  res = sheets: 0, ready: 0, processed:0, records: 0, failed: []
   console.log 'starting ta import'
   batch = []
   for ov in API.service.jct.csv2json 'https://docs.google.com/spreadsheets/d/e/2PACX-1vStezELi7qnKcyE8OiO2OYx2kqQDOnNsDX1JfAsK487n2uB_Dve5iDTwhUFfJ7eFPDhEjkfhXhqVTGw/pub?gid=1130349201&single=true&output=csv'
@@ -460,47 +465,51 @@ API.service.jct.ta.import = (mail=true) ->
       _src = (src, ov) ->
         Meteor.setTimeout () ->
           console.log src
-          for rec in API.service.jct.csv2json src
-            for e of rec # get rid of empty things
-              delete rec[e] if not rec[e]
-            ri = {}
-            for ik in ['Institution Name', 'ROR ID', 'Institution First Seen', 'Institution Last Seen']
-              ri[ik] = rec[ik]
-              delete rec[ik]
-            if not _.isEmpty(ri) and not ri['Institution Last Seen'] # if these are present then it is too late to use this agreement
-              ri[k] = ov[k] for k of ov
-              # pick out records relevant to institution type
-              ri.rid = (if ri['ESAC ID'] then ri['ESAC ID'].trim() else '') + (if ri['ESAC ID'] and ri['Relationship'] then '_' + ri['Relationship'].trim() else '') # are these sufficient to be unique?
-              ri.institution = ri['Institution Name'].trim() if ri['Institution Name']
-              ri.ror = ri['ROR ID'].split('/').pop().trim() if ri['ROR ID']?
-              ri.corresponding_authors = true if ri['C/A Only'].trim().toLowerCase() is 'yes'
-              res.records += 1
-              records.push(ri) if ri.institution and ri.ror
-            if not _.isEmpty(rec) and not rec['Journal Last Seen']
-              rec[k] = ov[k] for k of ov
-              rec.rid = (if rec['ESAC ID'] then rec['ESAC ID'].trim() else '') + (if rec['ESAC ID'] and rec['Relationship'] then '_' + rec['Relationship'].trim() else '') # are these sufficient to be unique?
-              rec.issn = []
-              bad = false
-              for ik in ['ISSN (Print)','ISSN (Online)']
-                for isp in (if typeof rec[ik] is 'string' then rec[ik].split(',') else [])
-                  if not isp? or typeof isp isnt 'string' or isp.indexOf('-') is -1 or isp.split('-').length > 2 or isp.length < 5
-                    bads.push issn: isp, esac: rec['ESAC ID'], rid: rec.rid, src: src
-                    bad = true
+          try
+            for rec in API.service.jct.csv2json src
+              for e of rec # get rid of empty things
+                delete rec[e] if not rec[e]
+              ri = {}
+              for ik in ['Institution Name', 'ROR ID', 'Institution First Seen', 'Institution Last Seen']
+                ri[ik] = rec[ik]
+                delete rec[ik]
+              if not _.isEmpty(ri) and not ri['Institution Last Seen'] # if these are present then it is too late to use this agreement
+                ri[k] = ov[k] for k of ov
+                # pick out records relevant to institution type
+                ri.rid = (if ri['ESAC ID'] then ri['ESAC ID'].trim() else '') + (if ri['ESAC ID'] and ri['Relationship'] then '_' + ri['Relationship'].trim() else '') # are these sufficient to be unique?
+                ri.institution = ri['Institution Name'].trim() if ri['Institution Name']
+                ri.ror = ri['ROR ID'].split('/').pop().trim() if ri['ROR ID']?
+                ri.corresponding_authors = true if ri['C/A Only'].trim().toLowerCase() is 'yes'
+                res.records += 1
+                records.push(ri) if ri.institution and ri.ror
+              if not _.isEmpty(rec) and not rec['Journal Last Seen']
+                rec[k] = ov[k] for k of ov
+                rec.rid = (if rec['ESAC ID'] then rec['ESAC ID'].trim() else '') + (if rec['ESAC ID'] and rec['Relationship'] then '_' + rec['Relationship'].trim() else '') # are these sufficient to be unique?
+                rec.issn = []
+                bad = false
+                for ik in ['ISSN (Print)','ISSN (Online)']
+                  for isp in (if typeof rec[ik] is 'string' then rec[ik].split(',') else [])
+                    if not isp? or typeof isp isnt 'string' or isp.indexOf('-') is -1 or isp.split('-').length > 2 or isp.length < 5
+                      bads.push issn: isp, esac: rec['ESAC ID'], rid: rec.rid, src: src
+                      bad = true
+                    else
+                      isp = isp.toUpperCase().trim()
+                      rec.issn.push(isp) if typeof isp is 'string' and isp.length and isp not in rec.issn
+                rec.journal = rec['Journal Name'].trim() if rec['Journal Name']?
+                rec.corresponding_authors = true if rec['C/A Only'].trim().toLowerCase() is 'yes'
+                res.records += 1
+                if not bad and rec.journal and rec.issn.length
+                  if exists = jct_journal.find 'issn.exact:"' + rec.issn.join('" OR issn.exact:"') + '"'
+                    for ei in exists.issn
+                      # don't take in ISSNs from TAs because we know they've been incorrect
+                      rec.issn.push(ei) if typeof ei is 'string' and ei.length and ei not in rec.issn
                   else
-                    isp = isp.toUpperCase().trim()
-                    rec.issn.push(isp) if typeof isp is 'string' and isp.length and isp not in rec.issn
-              rec.journal = rec['Journal Name'].trim() if rec['Journal Name']?
-              rec.corresponding_authors = true if rec['C/A Only'].trim().toLowerCase() is 'yes'
-              res.records += 1
-              if not bad and rec.journal and rec.issn.length
-                if exists = jct_journal.find 'issn.exact:"' + rec.issn.join('" OR issn.exact:"') + '"'
-                  for ei in exists.issn
-                    # don't take in ISSNs from TAs because we know they've been incorrect
-                    rec.issn.push(ei) if typeof ei is 'string' and ei.length and ei not in rec.issn
-                else
-                  # but if no record at all, not much choice so may as well accept
-                  batch.push issn: rec.issn, title: rec.journal, ta: true
-                records.push rec
+                    # but if no record at all, not much choice so may as well accept
+                    batch.push issn: rec.issn, title: rec.journal, ta: true
+                  records.push rec
+          catch
+            console.log src + ' FAILED'
+            res.failed.push src
           res.processed += 1
         , 1
       _src src, ov
@@ -519,11 +528,11 @@ API.service.jct.ta.import = (mail=true) ->
     batch = []
   if mail
     API.service.jct.mail
-      subject: 'JCT TA import complete' + (if API.settings.dev then ' (dev)' else '')
+      subject: 'JCT TA import complete'
       text: JSON.stringify res, '', 2
   if bads.length
     API.service.jct.mail
-      subject: 'JCT TA import found ' + bads.length + ' bad ISSNs' + (if API.settings.dev then ' (dev)' else '')
+      subject: 'JCT TA import found ' + bads.length + ' bad ISSNs'
       text: bads.length + ' bad ISSNs listed in attached file'
       attachment: bads
       filename: 'bad_issns.csv'
@@ -542,7 +551,7 @@ API.service.jct.tj = (issn, refresh) ->
       try tj.title = rec['Journal Title'].trim() if rec['Journal Title']
       tj.issn ?= []
       tj.issn.push(rec['ISSN (Print)'].trim().toUpperCase()) if typeof rec['ISSN (Print)'] is 'string' and rec['ISSN (Print)'].length
-      tj.issn.push(rec['e-ISSN (Online/Web)'].trim().toUpperCase()) if typeof rec['e-ISSN (Online/Web)'] is 'string' and rec['ISSN (Print)'].length
+      tj.issn.push(rec['e-ISSN (Online/Web)'].trim().toUpperCase()) if typeof rec['e-ISSN (Online/Web)'] is 'string' and rec['e-ISSN (Online/Web)'].length
       if tj.issn and tj.issn.length
         if exists = jct_journal.find 'issn.exact:"' + tj.issn.join('" OR issn.exact:"') + '"'
           upd = {}
@@ -825,7 +834,12 @@ API.service.jct.journals.import = (refresh) ->
     while total is 0 or counter < total
       if batch.length >= 10000 or (removed and batch.length >= 5000)
         if not removed
-          jct_journal.remove '*' # makes a shorter period of lack of records to query
+          # makes a shorter period of lack of records to query
+          # there will still be a period of 5 to 10 minutes where not all journals will be present
+          # but, since imports only occur once a day to every few days depending on settings, and 
+          # responses should be cached at cloudflare anyway, this should not affect anyone as long as 
+          # imports are not often run during UK/US business hours
+          jct_journal.remove '*'
           removed = true
         console.log 'Importing crossref ' + counter
         jct_journal.insert batch
@@ -835,13 +849,7 @@ API.service.jct.journals.import = (refresh) ->
         console.log 'getting from crossref journals ' + url
         res = HTTP.call 'GET', url, {headers: {'User-Agent': 'Journal Checker Tool; mailto: jct@cottagelabs.zendesk.com'}}
         total = res.data.message['total-results'] if total is 0
-        #res = crossref_journal.search '*', {from: counter, size: 1000}
-        #if total is 0
-        #  total = res.hits.total 
-        #  console.log 'Getting ' + total + ' crossref journals from local index'
-        #console.log 'Getting crossref journals ' + counter
-        for rec in res.data.message.items # .hits.hits
-          #rec = rec._source
+        for rec in res.data.message.items
           if rec.ISSN and rec.ISSN.length and typeof rec.ISSN[0] is 'string'
             rec.crossref = true
             rec.issn = []
@@ -937,13 +945,15 @@ API.service.jct.journals.import = (refresh) ->
   
 
 API.service.jct.import = (refresh) ->
-  # run all imports necessary for up to date data
   res = previously: jct_journal.count(), presently: undefined, started: Date.now()
-
-  res.journals = API.service.jct.journals.import refresh # takes about 10 mins depending how crossref is feeling
-  console.log 'JCT journals import complete'
-
-  if true #res.journals isnt 0 # could only do the others if journals update (weekly, limited by doaj)
+  res.newest = jct_agreement.find '*', true
+  if refresh or res.newest?.createdAt < Date.now()-86400000
+    # run all imports necessary for up to date data
+    console.log 'Starting JCT imports'
+  
+    res.journals = API.service.jct.journals.import() # takes about 10 mins depending how crossref is feeling
+    console.log 'JCT journals import complete'
+  
     res.tj = API.service.jct.tj undefined, true
     console.log 'JCT import TJs complete'
 
@@ -956,32 +966,29 @@ API.service.jct.import = (refresh) ->
 
     res.ta = API.service.jct.ta.import false # this is the slowest, takes about twenty minutes
     console.log 'JCT import TAs complete'
+  
+    # check the mappings on jct_journal, jct_agreement, any others that get used and changed during import
+    # include a warning in the email if they seem far out of sync
+    # and include the previously and presently count, they should not be too different
+    res.presently = jct_journal.count()
+    res.ended = Date.now()
+    res.took = res.ended - res.started
+    res.minutes = Math.ceil res.took/60000
+    if res.mapped = JSON.stringify(jct_journal.mapping()).indexOf('dynamic_templates') isnt -1
+      res.mapped = JSON.stringify(jct_agreement.mapping()).indexOf('dynamic_templates') isnt -1
+  
+    API.service.jct.mail
+      subject: 'JCT import complete'
+      text: JSON.stringify res, '', 2
 
-  # check the mappings on jct_journal, jct_agreement, any others that get used and changed during import
-  # include a warning in the email if they seem far out of sync
-  # and include the previously and presently count, they should not be too different
-  res.presently = jct_journal.count()
-  res.ended = Date.now()
-  res.took = res.ended - res.started
-  res.minutes = Math.ceil res.took/60000
-  if res.mapped = JSON.stringify(jct_journal.mapping()).indexOf('dynamic_templates') isnt -1
-    res.mapped = JSON.stringify(jct_agreement.mapping()).indexOf('dynamic_templates') isnt -1
-
-  API.service.jct.mail
-    subject: 'JCT import complete' + (if API.settings.dev then ' (dev)' else '')
-    text: JSON.stringify res, '', 2
   return res
 
 # run import every day on the main machine
 _jct_import = () ->
   try API.service.jct.funders() # get the funders at startup
   if API.settings.service?.jct?.import
-    Meteor.setInterval (() ->
-      newest = jct_agreement.find '*', true
-      if newest?.createdAt < Date.now()-86400000
-        API.service.jct.import()
-      ), 43200000
-Meteor.setTimeout _jct_import, 10000
+    Meteor.setInterval API.service.jct.import, 86400000
+Meteor.setTimeout _jct_import, 30000
 
 
 API.service.jct.unknown = (res, funder, journal, institution, send) ->
@@ -1105,7 +1112,7 @@ API.service.jct.table2json = (content) ->
 
 
 API.service.jct.mail = (opts) ->
-  ms = API.settings?.mail ? {} # need domain and apikey
+  ms = API.settings.mail ? {} # need domain and apikey
   mailer = mailgun domain: ms.domain, apiKey: ms.apikey
   opts.from ?= 'jct@cottagelabs.com' # ms.from ? 
   opts.to ?= 'jct@cottagelabs.zendesk.com' # ms.to ? 

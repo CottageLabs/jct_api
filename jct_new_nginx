@@ -5,7 +5,7 @@ limit_req_status 429;
 
 server {
     listen      80;
-    server_name api.journalcheckertool.org;
+    server_name journalcheckertool.org api.journalcheckertool.org;
 
     location ^~ /.well-known/acme-challenge/ {
         default_type "text/plain";
@@ -13,24 +13,6 @@ server {
     }
     location = /.well-known/acme-challenge/ {
         return 404;
-    }
-    #location /.well-known/acme-challenge/ {
-    #    allow all;
-    #    default_type text/plain;
-    #    root /var/www/letsencrypt;
-    #}
-    location / {
-        return 301 https://$host$request_uri;
-    }
-}
-server {
-    listen      80;
-    server_name journalcheckertool.org;
-
-    location /.well-known/acme-challenge/ {
-        allow all;
-        default_type text/plain;
-        root /var/www/letsencrypt;
     }
     location / {
         return 301 https://$host$request_uri;
@@ -76,22 +58,14 @@ server {
   location = /static/css/plugin.css {
     return 301 /css/plugin.css;
   }
+}
 
-  location ^~ /.well-known/acme-challenge/ {
-    default_type "text/plain";
-    root /var/www/letsencrypt;
-  }
-  location = /.well-known/acme-challenge/ {
-    return 404;
-  }
-
-  #location / {
-  #  #try_files /content/coming-soon.html =404;
-  #  try_files /serve/$uri.html /serve/$uri/index.html /content/$uri.html /content/$uri/index.html /serve/404.html =404;
-  #}
-  #location /content {
-  #  try_files $uri $uri.html $uri.md $uri/index $uri/index.html $uri/index.md =404;
-  #}
+upstream noddy_jct {
+    #ip_hash;
+    keepalive 16;
+    server localhost:3333; # max_fails=1 fail_timeout=60;
+    #server some.other.ip:3333 backup weight=5;
+    #server some.other.ip:3333 backup;
 }
 
 server {
@@ -109,14 +83,6 @@ server {
     ssl_prefer_server_ciphers on;
     ssl_stapling on;
     add_header Strict-Transport-Security "max-age=31536000;";
-
-    location ^~ /.well-known/acme-challenge/ {
-        default_type "text/plain";
-        root /var/www/letsencrypt;
-    }
-    location = /.well-known/acme-challenge/ {
-        return 404;
-    }
 
     location / {
         limit_req zone=jct burst=6000; # could also add nodelay to this, so anything after the limit immediately gets 503. Without that, later requests just wait

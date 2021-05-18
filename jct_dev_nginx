@@ -14,7 +14,6 @@ server {
   server_name jct.cottagelabs.com;
   root /home/cloo/dev/jct/jct/public;
 
-  ssl on;
   ssl_certificate /etc/letsencrypt/live/jct.cottagelabs.com/fullchain.pem;
   ssl_certificate_key /etc/letsencrypt/live/jct.cottagelabs.com/privkey.pem;
   ssl_protocols TLSv1 TLSv1.1 TLSv1.2;
@@ -27,68 +26,27 @@ server {
   add_header Cache-Control "public";
   add_header Access-Control-Allow-Origin *;
 
-  location ^~ /.well-known/acme-challenge/ {
-    default_type "text/plain";
-    root /var/www/letsencrypt;
+  location = /static/jct_plugin.js {
+    return 301 /js/jct_plugin.js;
   }
-  location = /.well-known/acme-challenge/ {
-    return 404;
+  location = /static/css/plugin.css {
+    return 301 /css/plugin.css;
   }
-
-  #location / {
-  #  try_files /serve/$uri.html /serve/$uri/index.html /content/$uri.html /content/$uri/index.html /serve/404.html =404;
-  #}
-  #location /content {
-  #  try_files $uri $uri.html $uri.md $uri/index $uri/index.html $uri/index.md =404;
-  #}
-  #location /static {
-  #  try_files /serve/$uri $uri =404;
-  #  expires 30d;
-  #}
 }
 
-server {
-  listen          443; # ssl for this domain is handled by cloudflare
-  server_name     jct.lvatn.com;
-
-  root /home/cloo/dev/jct/jct;
-
-  add_header Pragma public;
-  add_header Cache-Control "public";
-  add_header Access-Control-Allow-Origin *;
-
-  location / {
-    try_files /serve/$uri.html /serve/$uri/index.html /content/$uri.html /content/$uri/index.html /serve/404.html /404.html =404;
-  }
-
-  location /content {
-    try_files $uri $uri.html $uri.md $uri/index $uri/index.html $uri/index.md /404 =404;
-  }
-
-  location /static {
-    try_files /serve/$uri $uri =404;
-    expires 30d;
-  }
+upstream noddy_jct_dev {
+    server localhost:3002;
 }
 
 server {
     listen          443 ssl;
     server_name     api.jct.cottagelabs.com;
 
-    ssl on;
     ssl_certificate /etc/letsencrypt/live/api.jct.cottagelabs.com/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/api.jct.cottagelabs.com/privkey.pem;
 
-    location ^~ /.well-known/acme-challenge/ {
-        default_type "text/plain";
-        root /var/www/letsencrypt;
-    }
-    location = /.well-known/acme-challenge/ {
-        return 404;
-    }
-
     location / {
-        proxy_pass http://noddy_dev/api/service/jct/;
+        proxy_pass http://noddy_jct_dev/api/service/jct/;
         add_header Access-Control-Allow-Methods 'GET, PUT, POST, DELETE, OPTIONS';
         add_header Access-Control-Allow-Headers 'X-apikey,X-id,DNT,Keep-Alive,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type';
         proxy_http_version 1.1;
