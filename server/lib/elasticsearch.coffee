@@ -109,9 +109,7 @@ API.es.call = (action, route, data, refresh, version, scan, scroll='10m', partia
     if API.settings.log?.level in ['all','debug']
       ld = JSON.parse(JSON.stringify(ret.data))
       ld.hits.hits = ld.hits.hits.length if ld.hits?.hits?
-      if route.indexOf('_log') is -1 and API.settings.log.level is 'all'
-        API.log msg:'ES query info', options:opts, url: url, route: route, res: ld, level: 'all'
-      else if '_search' in route and not ret.data?.hits?.hits?
+      if '_search' in route and not ret.data?.hits?.hits?
         console.log JSON.stringify opts
         console.log JSON.stringify ld
     return ret.data
@@ -120,7 +118,6 @@ API.es.call = (action, route, data, refresh, version, scan, scroll='10m', partia
     # https://www.elastic.co/blog/elasticsearch-versioning-support
     lg = level: 'debug', msg: 'ES error, but may be OK, 404 for empty lookup, for example', action: action, url: url, route: route, opts: opts, error: err.toString()
     if err.response?.statusCode isnt 404 and route.indexOf('_log') is -1
-      API.log lg
       console.log(lg) if API.settings.log?.level? is 'debug'
     if API.settings.log?.level is 'all'
       console.log lg
@@ -158,7 +155,7 @@ API.es.bulk = (index, type, data, action='index', bulk=50000, dev=API.settings.d
   rows = if typeof data is 'object' and not Array.isArray(data) and data?.hits?.hits? then data.hits.hits else data
   rows = [rows] if not Array.isArray rows
   if index.indexOf('_log') is -1
-    API.log 'Doing bulk ' + action + ' of ' + rows.length + ' rows for ' + index + ' ' + type
+    console.log 'Doing bulk ' + action + ' of ' + rows.length + ' rows for ' + index + ' ' + type
   else if API.settings.log?.level in ['all','debug']
     console.log 'Doing bulk ' + action + ' of ' + rows.length + ' rows for ' + index + ' ' + type
   loaded = 0
