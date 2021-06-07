@@ -23,5 +23,5 @@
     "tar": "^6.1.0",
     "unidecode": "^0.1.8"
   },
-  "devDependencies": {},
+  "devDependencies": {}
 }
