@@ -16,3 +16,5 @@ hot-module-replacement@0.2.0  # Update client in development without reloading t
 
 coffeescript
 underscore
+http
+meteorhacks:async
