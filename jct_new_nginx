@@ -34,7 +34,7 @@ server {
 server {
   listen 443 ssl;
   server_name journalcheckertool.org;
-  root /home/cloo/live/jct/jct/public;
+  root /home/cloo/live/jct/public;
 
   error_log /var/log/nginx/jct_error.log;
   access_log /var/log/nginx/jct_access.log;
