@@ -18,3 +18,4 @@ coffeescript
 underscore
 http
 meteorhacks:async
+dispatch:retry-http
