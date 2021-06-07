@@ -7,7 +7,7 @@ import Fiber from 'fibers'
 
 #WebApp.connectHandlers.use connect.urlencoded({limit: '1024mb'})
 #WebApp.connectHandlers.use connect.json({limit: '1024mb', type: ['application/json', 'text/plain', 'application/*+json']})
-WebApp.connectHandlers.use connect.query()
+#WebApp.connectHandlers.use connect.query()
 
 JsonRoutes.Middleware = JsonRoutes.middleWare = connect()
 WebApp.connectHandlers.use JsonRoutes.Middleware
