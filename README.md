@@ -92,6 +92,28 @@ just a preference. Any future development can be written in .js files instead
 if preferred, and merging them all together is automatically handled anyway.
 
 
+# About Meteor
+
+Much more info is of course available at meteor.com, but generally Meteor is not 
+very well utilised in this project any more. Like coffeescript, it was handy to 
+use before modern node.js improved. However it is still a good and well 
+supported framework, so using it causes no harm. Whilst many of the features it 
+was designed for are not used because JCT is only an API with a separate static 
+UI, the build, run, and management features of meteor are still used.
+
+"meteor list" lists all the installed meteor packages
+
+"meteor add ..." can be used to add a meteor package
+
+"meteor remove ..." will remove one
+
+"meteor npm install --save ..." can be used to install and manage node packages
+
+"meteor npm uninstall ..." will uninstall a node package.
+
+Meteor also handles dependencies, and the version of Node to use, internally.
+
+
 ## Installing on a virtual machine (optional)
 
 A 4GB 2vCPU DO machine with the latest Ubuntu server works fine.
