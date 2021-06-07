@@ -77,11 +77,12 @@ requires Meteor).
 
 /server/lib contains the necessary parts from Noddy, stripped 
 down to only what JCT needs, to keep it simple and easy to maintain. If future 
-JCT development requries features such as auth, check out the old Noddy codebase 
-which has many more advanced capabilities. aestivus.coffee contains the main 
-structure of the API, and api.coffee instantiates the API. collection.coffee 
-handles data collections, and it stores and interacts with them using 
-elasticsearch.coffee.
+JCT development requires features such as auth, check out the old Noddy codebase 
+which has many more advanced capabilities (although note it is being deprecated 
+- it would still work, but won't be receiving new improvements). aestivus.coffee 
+contains the main structure of the API, and api.coffee instantiates the API. 
+collection.coffee handles data collections, and it stores and interacts with 
+them using elasticsearch.coffee.
 
 /server/service/jct contains the code of the JCT app itself. It's all in one 
 file called api.coffee (there's another called scripts.coffee which was just 
