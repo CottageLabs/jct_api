@@ -55,6 +55,10 @@ which should point to an object containing "apikey". This must be your DOAJ API
 key for retrieving the DOAJ in progress applications (talk to doaj.org team 
 about getting a special API key for this, as it is a unique feature for JCT).
 
+Run the install command to set up dependencies:
+
+meteor npm install
+
 Finally, to start the app, run:
 
 MONGO_URL="http://nowhere" && meteor --port 3002 --settings settings.json
@@ -99,7 +103,8 @@ very well utilised in this project any more. Like coffeescript, it was handy to
 use before modern node.js improved. However it is still a good and well 
 supported framework, so using it causes no harm. Whilst many of the features it 
 was designed for are not used because JCT is only an API with a separate static 
-UI, the build, run, and management features of meteor are still used.
+UI and we don't use MongoDB, the build, run, and management features of meteor 
+are still used.
 
 "meteor list" lists all the installed meteor packages
 
