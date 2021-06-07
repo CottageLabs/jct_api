@@ -1,12 +1,17 @@
 server {
     listen      80;
-    server_name api.jct.cottagelabs.com;
-    return 301 https://api.jct.cottagelabs.com$request_uri;
-}
-server {
-    listen      80;
-    server_name jct.cottagelabs.com;
-    return 301 https://jct.cottagelabs.com$request_uri;
+    server_name jct.cottagelabs.com api.jct.cottagelabs.com;
+
+    location ^~ /.well-known/acme-challenge/ {
+        default_type "text/plain";
+        root /var/www/letsencrypt;
+    }
+    location = /.well-known/acme-challenge/ {
+        return 404;
+    }
+    location / {
+        return 301 https://$host$request_uri;
+    }
 }
 
 server {

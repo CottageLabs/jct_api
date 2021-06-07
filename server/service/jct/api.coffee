@@ -75,6 +75,10 @@ API.add 'service/jct/retention',
   get: () -> 
     Meteor.setTimeout (() => API.service.jct.retention this.queryParams.issn, this.queryParams.refresh), 1
     return true
+API.add 'service/jct/retention/import', 
+  get: () -> 
+    Meteor.setTimeout (() => API.service.jct.retention undefined, true), 1
+    return true
 
 API.add 'service/jct/tj', get: () -> return jct_journal.search this.queryParams, {restrict: [{exists: {field: 'tj'}}]}
 API.add 'service/jct/tj/:issn', 
@@ -93,7 +97,6 @@ API.add 'service/jct/feedback',
   get: () -> return API.service.jct.feedback this.queryParams
   post: () -> return API.service.jct.feedback this.bodyParams
 
-# and some administrative ones
 API.add 'service/jct/import', 
   get: () -> 
     Meteor.setTimeout (() => API.service.jct.import this.queryParams.refresh), 1
@@ -235,14 +238,14 @@ API.service.jct.suggest.journal = (str, from, size) ->
           q.query.filtered.query.query_string.query += 'issn:' + str + '*'
         q.query.filtered.query.query_string.query += ' OR title:"' + str + '" OR title:' + str + '* OR title:' + str + '~)'
     else
-      str = API.service.academic._clean str
+      str = _jct_clean str
       q.query.filtered.query.query_string.query = 'issn:* AND NOT discontinued:true AND NOT dois:0 AND (title:"' + str + '" OR '
       q.query.filtered.query.query_string.query += (if str.indexOf(' ') is -1 then 'title:' + str + '*' else '(title:' + str.replace(/ /g,'~ AND title:') + '*)') + ')'
   res = jct_journal.search q
   starts = []
   extra = []
   for rec in res?.hits?.hits ? []
-    if not str or JSON.stringify(rec._source.issn).indexOf(str) isnt -1 or API.service.academic._clean(rec._source.title).startsWith(str)
+    if not str or JSON.stringify(rec._source.issn).indexOf(str) isnt -1 or _jct_clean(rec._source.title).startsWith(str)
       starts.push rec._source
     else
       extra.push rec._source
@@ -453,6 +456,7 @@ API.service.jct.ta.import = (mail=true) ->
   res = sheets: 0, ready: 0, processed:0, records: 0, failed: []
   console.log 'starting ta import'
   batch = []
+  bissns = [] # track ones going into the batch
   for ov in API.service.jct.csv2json 'https://docs.google.com/spreadsheets/d/e/2PACX-1vStezELi7qnKcyE8OiO2OYx2kqQDOnNsDX1JfAsK487n2uB_Dve5iDTwhUFfJ7eFPDhEjkfhXhqVTGw/pub?gid=1130349201&single=true&output=csv'
     res.sheets += 1
     if typeof ov?['Data URL'] is 'string' and ov['Data URL'].trim().indexOf('http') is 0 and ov?['End Date']? and moment(ov['End Date'].trim(), 'YYYY-MM-DD').valueOf() > Date.now()
@@ -492,9 +496,9 @@ API.service.jct.ta.import = (mail=true) ->
                     if not isp? or typeof isp isnt 'string' or isp.indexOf('-') is -1 or isp.split('-').length > 2 or isp.length < 5
                       bads.push issn: isp, esac: rec['ESAC ID'], rid: rec.rid, src: src
                       bad = true
-                    else
-                      isp = isp.toUpperCase().trim()
-                      rec.issn.push(isp) if typeof isp is 'string' and isp.length and isp not in rec.issn
+                    else if typeof isp is 'string'
+                      nisp = isp.toUpperCase().trim().replace(/ /g, '')
+                      rec.issn.push(nisp) if nisp.length and nisp not in rec.issn
                 rec.journal = rec['Journal Name'].trim() if rec['Journal Name']?
                 rec.corresponding_authors = true if rec['C/A Only'].trim().toLowerCase() is 'yes'
                 res.records += 1
@@ -504,8 +508,15 @@ API.service.jct.ta.import = (mail=true) ->
                       # don't take in ISSNs from TAs because we know they've been incorrect
                       rec.issn.push(ei) if typeof ei is 'string' and ei.length and ei not in rec.issn
                   else
+                    inbi = false
                     # but if no record at all, not much choice so may as well accept
-                    batch.push issn: rec.issn, title: rec.journal, ta: true
+                    for ri in rec.issn
+                      if ri in bissns
+                        inbi = true
+                      else
+                        bissns.push ri
+                    if not inbi
+                      batch.push issn: rec.issn, title: rec.journal, ta: true
                   records.push rec
           catch
             console.log src + ' FAILED'
@@ -840,6 +851,10 @@ API.service.jct.journals.import = (refresh) ->
           # responses should be cached at cloudflare anyway, this should not affect anyone as long as 
           # imports are not often run during UK/US business hours
           jct_journal.remove '*'
+          console.log 'Removing old journal records'
+          future = new Future()
+          Meteor.setTimeout (() -> future.return()), 10000
+          future.wait()
           removed = true
         console.log 'Importing crossref ' + counter
         jct_journal.insert batch
@@ -983,12 +998,17 @@ API.service.jct.import = (refresh) ->
 
   return res
 
-# run import every day on the main machine
 _jct_import = () ->
   try API.service.jct.funders() # get the funders at startup
-  if API.settings.service?.jct?.import
-    Meteor.setInterval API.service.jct.import, 86400000
-Meteor.setTimeout _jct_import, 30000
+  if API.settings.service?.jct?.import isnt false # so defaults to run if not set to false in settings
+    # if later updates are made to run this on a cluster again, make sure that only one server runs this (e.g. use the import setting above where necessary)
+    Meteor.setInterval () ->
+      today = new Date()
+      if today.getDay() is 6 # if today is a Saturday run an import
+        API.service.jct.import()
+    , 86400000
+if not API.settings.dev
+  Meteor.setTimeout _jct_import, 30000
 
 
 API.service.jct.unknown = (res, funder, journal, institution, send) ->
@@ -1036,8 +1056,6 @@ API.service.jct.feedback = (params={}) ->
       from: if params.email.indexOf('@') isnt -1 and params.email.indexOf('.') isnt -1 then params.email else 'nobody@cottagelabs.com'
       subject: params.subject ? params.feedback.substring(0,100) + if params.feedback.length > 100 then '...' else ''
       text: (if API.settings.dev then '(dev)\n\n' else '') + params.feedback + '\n\n' + (if params.subject then '' else JSON.stringify params, '', 2)
-      attachment: [{hello: 'world', goodbye: 'you'}, {hello: 'mark', goodbye: 'me'}, {hello: 'test', goodbye: 'them'}]
-      filename: 'test.csv'
     return true
   else
     return false
