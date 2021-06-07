@@ -1218,7 +1218,7 @@ API.service.jct.test = (params={}) ->
       test: (r) -> 
         if r.compliant
           rs = JSON.stringify r.results
-          return rs.indexOf('TJ.NoTJ') isnt -1 and rs.indexOf('TA.NoTA') isnt -1 and rs.indexOf('FullOA.NotInDOAJ') isnt -1
+          return rs.split('"route": "self_archiving"')[1].indexOf('"compliant": "yes"') isnt -1
         return false
     six: # Query 6
       journal: '1477-9129' # Development (published by Company of Biologists, not the other one, hence done by ISSN) # (Transformative Journal, AAM 12 month embargo) 0951-1991
