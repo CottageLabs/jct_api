@@ -1217,8 +1217,9 @@ API.service.jct.test = (params={}) ->
       'actual outcome': 'As expected'
       test: (r) -> 
         if r.compliant
-          rs = JSON.stringify r.results
-          return rs.split('"route": "self_archiving"')[1].indexOf('"compliant": "yes"') isnt -1
+          for rs in r.results
+            if rs.route is 'self_archiving' and rs.compliant is 'yes'
+              return true
         return false
     six: # Query 6
       journal: '1477-9129' # Development (published by Company of Biologists, not the other one, hence done by ISSN) # (Transformative Journal, AAM 12 month embargo) 0951-1991
