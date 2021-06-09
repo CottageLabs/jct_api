@@ -40,9 +40,17 @@ funders will be a list given to us by JCT detailing their particular requirement
 '''
 
 # define the necessary collections - institution is defined global so a separate script was able to initialise it
+# where devislive is true, the live indexes are actually reading from the dev ones. This is handy for 
+# datasets that are the same, such as institutions, journals, and transformative agreements
+# but compliance and unknown should be unique as they could have different results on dev or live depending on code changes
+# to do alterations to code on dev that may change how institutions, journals, or agreements are constructed, comment out the devislive setting
+# NOTE: doing this would mean live would not have recent data to read from, so after this code change is deployed to live 
+# it should be followed by manually triggering a full import on live
+# (for convenience the settings have initially been set up to only run import on dev as well, to make the most 
+# of the dev machine and minimise any potential memory or CPU intense work on the live machine - see the settings.json file for this config)
 @jct_institution = new API.collection {index:"jct", type:"institution", devislive: true}
 jct_journal = new API.collection {index:"jct", type:"journal", devislive: true}
-jct_agreement = new API.collection {index:"jct", type:"agreement"} #, devislive: true}
+jct_agreement = new API.collection {index:"jct", type:"agreement", devislive: true}
 jct_compliance = new API.collection {index:"jct", type:"compliance"}
 jct_unknown = new API.collection {index:"jct", type:"unknown"}
 
@@ -1001,14 +1009,15 @@ API.service.jct.import = (refresh) ->
 _jct_import = () ->
   try API.service.jct.funders() # get the funders at startup
   if API.settings.service?.jct?.import isnt false # so defaults to run if not set to false in settings
+    console.log 'Setting up a daily import check which will run an import if it is a Saturday'
     # if later updates are made to run this on a cluster again, make sure that only one server runs this (e.g. use the import setting above where necessary)
     Meteor.setInterval () ->
       today = new Date()
       if today.getDay() is 6 # if today is a Saturday run an import
+        console.log 'Starting Saturday import'
         API.service.jct.import()
     , 86400000
-if not API.settings.dev
-  Meteor.setTimeout _jct_import, 30000
+Meteor.setTimeout _jct_import, 30000
 
 
 API.service.jct.unknown = (res, funder, journal, institution, send) ->
