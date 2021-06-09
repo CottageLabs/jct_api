@@ -1068,6 +1068,7 @@ Meteor.setTimeout (() -> API.service.jct.unknown(undefined, undefined, undefined
 
 
 API.service.jct.feedback = (params={}) ->
+  console.log params
   if typeof params.name is 'string' and typeof params.email is 'string' and typeof params.feedback is 'string' and (not params.context? or typeof params.context is 'object')
     API.service.jct.mail
       from: if params.email.indexOf('@') isnt -1 and params.email.indexOf('.') isnt -1 then params.email else 'nobody@cottagelabs.com'
