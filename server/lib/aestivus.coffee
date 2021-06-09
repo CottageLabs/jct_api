@@ -1,13 +1,14 @@
 
 import connect from 'connect'
 import connectRoute from 'connect-route'
+import bodyParser from 'body-parser'
 import Fiber from 'fibers'
 
 @JsonRoutes = {}
 
 #WebApp.connectHandlers.use connect.urlencoded({limit: '1024mb'})
-#WebApp.connectHandlers.use connect.json({limit: '1024mb', type: ['application/json', 'text/plain', 'application/*+json']})
 #WebApp.connectHandlers.use connect.query()
+WebApp.connectHandlers.use bodyParser.json({limit: '4mb', type: ['application/json', 'text/plain', 'application/*+json']})
 
 JsonRoutes.Middleware = JsonRoutes.middleWare = connect()
 WebApp.connectHandlers.use JsonRoutes.Middleware
@@ -134,9 +135,6 @@ class share.Route
           catch
             rq = req.query
             
-          console.log rq
-          console.log req.query
-          console.log req.body
           endpointContext =
             urlParams: req.params
             queryParams: rq
