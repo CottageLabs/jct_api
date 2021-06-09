@@ -68,6 +68,10 @@ it's a default for Meteor, so we set the MONGO_URL to nowhere. Start it in a
 screen if you want to leave it running, or install and use pm2 if you prefer 
 for running it in production.
 
+You can also control how much memory it can take up, such as: 
+
+export NODE_OPTIONS='--max-old-space-size=3072' && export MONGO_URL="http://nowhere" && meteor --port 3333 --settings settings.json
+
 
 ## About the code
 

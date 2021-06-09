@@ -973,20 +973,25 @@ API.service.jct.import = (refresh) ->
   if refresh or res.newest?.createdAt < Date.now()-86400000
     # run all imports necessary for up to date data
     console.log 'Starting JCT imports'
-  
-    res.journals = API.service.jct.journals.import() # takes about 10 mins depending how crossref is feeling
+
+    console.log 'Starting journals import'
+    res.journals = API.service.jct.journals.import refresh # takes about 10 mins depending how crossref is feeling
     console.log 'JCT journals import complete'
   
+    console.log 'Starting TJs import'
     res.tj = API.service.jct.tj undefined, true
     console.log 'JCT import TJs complete'
 
+    console.log 'Starting retention data import'
     res.retention = API.service.jct.retention undefined, true
     console.log 'JCT import retention data complete'
 
+    console.log 'Starting funder data import'
     res.funders = API.service.jct.funders undefined, true
     res.funders = res.funders.length if _.isArray res.funders
     console.log 'JCT import funders complete'
 
+    console.log 'Starting TAs data import'
     res.ta = API.service.jct.ta.import false # this is the slowest, takes about twenty minutes
     console.log 'JCT import TAs complete'
   
@@ -1017,7 +1022,7 @@ _jct_import = () ->
         console.log 'Starting Saturday import'
         API.service.jct.import()
     , 86400000
-Meteor.setTimeout _jct_import, 30000
+Meteor.setTimeout _jct_import, 5000
 
 
 API.service.jct.unknown = (res, funder, journal, institution, send) ->
