@@ -134,6 +134,9 @@ class share.Route
           catch
             rq = req.query
             
+          console.log rq
+          console.log req.query
+          console.log req.body
           endpointContext =
             urlParams: req.params
             queryParams: rq
