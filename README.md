@@ -100,6 +100,10 @@ coffeescript provided. However, coffeescript is still neater to write, so it's
 just a preference. Any future development can be written in .js files instead 
 if preferred, and merging them all together is automatically handled anyway.
 
+If you develop the code and add a new dependency, use 
+"meteor npm install --save ..." to add it to the package list, and then when 
+you deploy the code, "meteor npm install" will need to be run again too.
+
 
 # About Meteor
 
