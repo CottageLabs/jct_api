@@ -372,6 +372,9 @@ API.service.jct.calculate = (params={}, refresh, checks=['permission', 'doaj', '
         cm.institution = i
         combos.push cm
 
+  console.log 'Calculating for:'
+  console.log combos
+
   # start an async check for every combo
   _prl = (combo) -> Meteor.setTimeout (() -> _check combo.funder, combo.journal, combo.institution), 1
   for c in combos
@@ -1160,6 +1163,7 @@ API.service.jct.mail = (opts) ->
       fn = 'data.csv'
     att = API.service.jct.csv opts.attachment
     opts.attachment = new mailer.Attachment filename: fn, contentType: 'text/csv', data: Buffer.from att, 'utf8'
+  console.log 'Sending mail to ' + opts.to
   mailer.messages().send opts
   return true
 
