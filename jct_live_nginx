@@ -5,7 +5,7 @@ limit_req_status 429;
 
 server {
     listen      80;
-    server_name journalcheckertool.org api.journalcheckertool.org;
+    server_name journalcheckertool.org api.journalcheckertool.org www.journalcheckertool.org;
 
     location ^~ /.well-known/acme-challenge/ {
         default_type "text/plain";
@@ -20,15 +20,12 @@ server {
 }
 
 server {
-    listen      80;
-    server_name www.journalcheckertool.org;
-    return 301 https://journalcheckertool.org$request_uri;
-}
-
-server {
     listen      443;
     server_name www.journalcheckertool.org;
     return 301 https://journalcheckertool.org$request_uri;
+
+    ssl_certificate /etc/letsencrypt/live/www.journalcheckertool.org/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/www.journalcheckertool.org/privkey.pem;
 }
 
 server {
