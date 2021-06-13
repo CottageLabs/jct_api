@@ -569,6 +569,7 @@ API.service.jct.ta.import = (mail=true) ->
 API.service.jct.tj = (issn, refresh) ->
   if refresh
     for rec in API.service.jct.csv2json 'https://docs.google.com/spreadsheets/d/e/2PACX-1vT2SPOjVU4CKhP7FHOgaf0aRsjSOt-ApwLOy44swojTDFsWlZAIZViC0gdbmxJaEWxdJSnUmNoAnoo9/pub?gid=0&single=true&output=csv'
+      console.log rec
       tj = {}
       try tj.title = rec['Journal Title'].trim() if rec['Journal Title']
       tj.issn ?= []
@@ -609,6 +610,8 @@ API.service.jct.tj = (issn, refresh) ->
     # TJ.NonCompliant - TJ.Compliant
     # but there is as yet no way to determine those so they are not used here yet.
   else
+    console.log 'returning'
+    console.log jct_journal.count 'tj:true'
     return jct_journal.count 'tj:true'
 
 
@@ -979,7 +982,7 @@ API.service.jct.import = (refresh) ->
 
     console.log 'Starting journals import'
     res.journals = API.service.jct.journals.import refresh # takes about 10 mins depending how crossref is feeling
-    console.log 'JCT journals import complete'
+    console.log 'JCT journals imported ' + res.journals
   
     console.log 'Starting TJs import'
     res.tj = API.service.jct.tj undefined, true
