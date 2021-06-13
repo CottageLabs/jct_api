@@ -81,8 +81,7 @@ API.add 'service/jct/ta/import',
 
 API.add 'service/jct/retention', 
   get: () -> 
-    Meteor.setTimeout (() => API.service.jct.retention this.queryParams.issn, this.queryParams.refresh), 1
-    return true
+    return API.service.jct.retention this.queryParams.issn
 API.add 'service/jct/retention/import', 
   get: () -> 
     Meteor.setTimeout (() => API.service.jct.retention undefined, true), 1
@@ -786,8 +785,10 @@ API.service.jct.doaj = (issn) ->
 
 # https://www.coalition-s.org/plan-s-funders-implementation/
 _funders = []
+_last_funders = Date.now()
 API.service.jct.funders = (id, refresh) ->
-  if refresh or _funders.length is 0
+  if refresh or _funders.length is 0 or _last_funders > (Date.now() - 604800000) # if older than a week
+    _last_funders = Date.now()
     _funders = []
     for r in API.service.jct.table2json 'https://www.coalition-s.org/plan-s-funders-implementation/'
       rec = 
@@ -1018,7 +1019,7 @@ API.service.jct.import = (refresh) ->
   return res
 
 _jct_import = () ->
-  try API.service.jct.funders() # get the funders at startup
+  try API.service.jct.funders undefined, true # get the funders at startup
   if API.settings.service?.jct?.import isnt false # so defaults to run if not set to false in settings
     console.log 'Setting up a daily import check which will run an import if it is a Saturday'
     # if later updates are made to run this on a cluster again, make sure that only one server runs this (e.g. use the import setting above where necessary)
