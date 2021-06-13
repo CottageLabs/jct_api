@@ -571,8 +571,7 @@ API.service.jct.tj = (issn, refresh) ->
     console.log 'Starting tj import'
     recs = API.service.jct.csv2json 'https://docs.google.com/spreadsheets/d/e/2PACX-1vT2SPOjVU4CKhP7FHOgaf0aRsjSOt-ApwLOy44swojTDFsWlZAIZViC0gdbmxJaEWxdJSnUmNoAnoo9/pub?gid=0&single=true&output=csv'
     console.log 'Retrieved ' + recs.length + ' tj records from sheet'
-    console.log recs
-    for rec in []
+    for rec in recs
       tj = {}
       try tj.title = rec['Journal Title'].trim() if rec['Journal Title']
       tj.issn ?= []
