@@ -1107,7 +1107,7 @@ API.service.jct.csv = (rows) ->
 
 API.service.jct.csv2json = Async.wrap (content, callback) ->
   content = HTTP.call('GET', content).content if content.indexOf('http') is 0
-  csvtojson({output: "csv"}).fromString(content).then (result) -> return callback null, result
+  csvtojson().fromString(content).then (result) -> return callback null, result
 
 API.service.jct.table2json = (content) ->
   content = HTTP.call('GET', content).content if content.indexOf('http') is 0 # TODO need to try this without puppeteer
