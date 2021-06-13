@@ -568,6 +568,7 @@ API.service.jct.ta.import = (mail=true) ->
 # check if an issn is in the transformative journals list (to be provided by plan S)
 API.service.jct.tj = (issn, refresh) ->
   if refresh
+    console.log 'refresh tj'
     for rec in API.service.jct.csv2json 'https://docs.google.com/spreadsheets/d/e/2PACX-1vT2SPOjVU4CKhP7FHOgaf0aRsjSOt-ApwLOy44swojTDFsWlZAIZViC0gdbmxJaEWxdJSnUmNoAnoo9/pub?gid=0&single=true&output=csv'
       console.log rec
       tj = {}
@@ -1106,9 +1107,10 @@ API.service.jct.csv = (rows) ->
 
 API.service.jct.csv2json = Async.wrap (content, callback) ->
   content = HTTP.call('GET', content).content if content.indexOf('http') is 0
-  converter = new Converter({})
+  converter = new Converter {}
   converter.fromString content, (err, result) -> 
-    return callback(null,result)
+    console.log result
+    return callback null, result
 
 API.service.jct.table2json = (content) ->
   content = HTTP.call('GET', content).content if content.indexOf('http') is 0 # TODO need to try this without puppeteer
