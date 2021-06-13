@@ -6,7 +6,7 @@ import tar from 'tar'
 import Future from 'fibers/future'
 import { Random } from 'meteor/random'
 import unidecode from 'unidecode'
-import { Converter } from 'csvtojson'
+import csvtojson from 'csvtojson'
 import stream from 'stream'
 
 '''
@@ -465,7 +465,7 @@ API.service.jct.ta.import = (mail=true) ->
   bads = []
   records = []
   res = sheets: 0, ready: 0, processed:0, records: 0, failed: []
-  console.log 'starting ta import'
+  console.log 'Starting ta import'
   batch = []
   bissns = [] # track ones going into the batch
   for ov in API.service.jct.csv2json 'https://docs.google.com/spreadsheets/d/e/2PACX-1vStezELi7qnKcyE8OiO2OYx2kqQDOnNsDX1JfAsK487n2uB_Dve5iDTwhUFfJ7eFPDhEjkfhXhqVTGw/pub?gid=1130349201&single=true&output=csv'
@@ -568,9 +568,11 @@ API.service.jct.ta.import = (mail=true) ->
 # check if an issn is in the transformative journals list (to be provided by plan S)
 API.service.jct.tj = (issn, refresh) ->
   if refresh
-    console.log 'refresh tj'
-    for rec in API.service.jct.csv2json 'https://docs.google.com/spreadsheets/d/e/2PACX-1vT2SPOjVU4CKhP7FHOgaf0aRsjSOt-ApwLOy44swojTDFsWlZAIZViC0gdbmxJaEWxdJSnUmNoAnoo9/pub?gid=0&single=true&output=csv'
-      console.log rec
+    console.log 'Starting tj import'
+    recs = API.service.jct.csv2json 'https://docs.google.com/spreadsheets/d/e/2PACX-1vT2SPOjVU4CKhP7FHOgaf0aRsjSOt-ApwLOy44swojTDFsWlZAIZViC0gdbmxJaEWxdJSnUmNoAnoo9/pub?gid=0&single=true&output=csv'
+    console.log 'Retrieved ' + recs.length + ' tj records from sheet'
+    console.log recs
+    for rec in []
       tj = {}
       try tj.title = rec['Journal Title'].trim() if rec['Journal Title']
       tj.issn ?= []
@@ -611,8 +613,6 @@ API.service.jct.tj = (issn, refresh) ->
     # TJ.NonCompliant - TJ.Compliant
     # but there is as yet no way to determine those so they are not used here yet.
   else
-    console.log 'returning'
-    console.log jct_journal.count 'tj:true'
     return jct_journal.count 'tj:true'
 
 
@@ -1107,10 +1107,7 @@ API.service.jct.csv = (rows) ->
 
 API.service.jct.csv2json = Async.wrap (content, callback) ->
   content = HTTP.call('GET', content).content if content.indexOf('http') is 0
-  converter = new Converter {}
-  converter.fromString content, (err, result) -> 
-    console.log result
-    return callback null, result
+  csvtojson({output: "csv"}).fromString(content).then (result) -> return callback null, result
 
 API.service.jct.table2json = (content) ->
   content = HTTP.call('GET', content).content if content.indexOf('http') is 0 # TODO need to try this without puppeteer
