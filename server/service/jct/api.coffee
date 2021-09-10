@@ -48,9 +48,9 @@ funders will be a list given to us by JCT detailing their particular requirement
 # it should be followed by manually triggering a full import on live
 # (for convenience the settings have initially been set up to only run import on dev as well, to make the most 
 # of the dev machine and minimise any potential memory or CPU intense work on the live machine - see the settings.json file for this config)
-@jct_institution = new API.collection {index:"jct", type:"institution", devislive: true}
-jct_journal = new API.collection {index:"jct", type:"journal", devislive: true}
-jct_agreement = new API.collection {index:"jct", type:"agreement", devislive: true}
+@jct_institution = new API.collection {index:"jct", type:"institution"}
+jct_journal = new API.collection {index:"jct", type:"journal"}
+jct_agreement = new API.collection {index:"jct", type:"agreement"}
 jct_compliance = new API.collection {index:"jct", type:"compliance"}
 jct_unknown = new API.collection {index:"jct", type:"unknown"}
 
