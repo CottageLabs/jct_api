@@ -21,7 +21,7 @@
     "fibers": "^5.0.0",
     "mailgun-js": "^0.22.0",
     "moment": "^2.29.1",
-    "tar": "^6.1.0",
+    "tar": "^6.1.9",
     "unidecode": "^0.1.8"
   },
   "devDependencies": {}
