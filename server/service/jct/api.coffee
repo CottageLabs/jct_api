@@ -457,8 +457,7 @@ API.service.jct.ta = (issn, ror) ->
 
 # import transformative agreements data from sheets 
 # https://github.com/antleaf/jct-project/blob/master/ta/public_data.md
-# only validated agreements will be exposed at the following sheet
-# https://docs.google.com/spreadsheets/d/e/2PACX-1vStezELi7qnKcyE8OiO2OYx2kqQDOnNsDX1JfAsK487n2uB_Dve5iDTwhUFfJ7eFPDhEjkfhXhqVTGw/pub?gid=1130349201&single=true&output=csv
+# only validated agreements will be exposed at the sheet
 # get the "Data URL" - if it's a valid URL, and the End Date is after current date, get the csv from it
 API.service.jct.ta.import = (mail=true) ->
   bads = []
@@ -467,7 +466,8 @@ API.service.jct.ta.import = (mail=true) ->
   console.log 'Starting ta import'
   batch = []
   bissns = [] # track ones going into the batch
-  for ov in API.service.jct.csv2json 'https://docs.google.com/spreadsheets/d/e/2PACX-1vStezELi7qnKcyE8OiO2OYx2kqQDOnNsDX1JfAsK487n2uB_Dve5iDTwhUFfJ7eFPDhEjkfhXhqVTGw/pub?gid=1130349201&single=true&output=csv'
+  ta_url = API.settings.data_url?.csv?.ta
+  for ov in API.service.jct.csv2json ta_url
     res.sheets += 1
     if typeof ov?['Data URL'] is 'string' and ov['Data URL'].trim().indexOf('http') is 0 and ov?['End Date']? and moment(ov['End Date'].trim(), 'YYYY-MM-DD').valueOf() > Date.now()
       res.ready += 1
@@ -568,7 +568,8 @@ API.service.jct.ta.import = (mail=true) ->
 API.service.jct.tj = (issn, refresh) ->
   if refresh
     console.log 'Starting tj import'
-    recs = API.service.jct.csv2json 'https://docs.google.com/spreadsheets/d/e/2PACX-1vT2SPOjVU4CKhP7FHOgaf0aRsjSOt-ApwLOy44swojTDFsWlZAIZViC0gdbmxJaEWxdJSnUmNoAnoo9/pub?gid=0&single=true&output=csv'
+    tj_url = API.settings.data_url?.csv?.tj
+    recs = API.service.jct.csv2json tj_url
     console.log 'Retrieved ' + recs.length + ' tj records from sheet'
     for rec in recs
       tj = {}
@@ -614,8 +615,6 @@ API.service.jct.tj = (issn, refresh) ->
     return jct_journal.count 'tj:true'
 
 
-# what are these qualifications relevant to? TAs?
-# there is no funder qualification done now, due to retention policy change decision at ened of October 2020. May be added again later.
 # rights_retention_author_advice - 
 # rights_retention_funder_implementation - the journal does not have an SA policy and the funder has a rights retention policy that starts in the future. 
 # There should be one record of this per funder that meets the conditions, and the following qualification specific data is requried:
@@ -625,33 +624,34 @@ API.service.jct.tj = (issn, refresh) ->
 API.service.jct.retention = (issn, refresh) ->
   # check the rights retention data source once it exists if the record is not in OAB
   # for now this is a fallback to something that is not in OAB
-  # will be a list of journals by ISSN and a number 1,2,3,4,5
+  # will be a list of journals by ISSN
+  # If they exists, then it has a rights retention exception
   if refresh
     counter = 0
-    for rt in API.service.jct.csv2json 'https://docs.google.com/spreadsheets/d/e/2PACX-1vTVZwZtdYSUFfKVRGO3jumQcLEjtnbdbw7yJ4LvfC2noYn3IwuTDjA9CEjzSaZjX8QVkWijqa3rmicY/pub?gid=0&single=true&output=csv'
+    csv_data = API.settings.data_url?.csv?.sa_prohibited
+    for rt in API.service.jct.csv2json csv_data
       counter += 1
       console.log('Retention import ' + counter) if counter % 20 is 0
-      rt.journal = rt['Journal Name'].trim() if typeof rt['Journal Name'] is 'string'
+      rt.journal = rt['Journal Title'].trim() if typeof rt['Journal Title'] is 'string'
       rt.issn = []
       rt.issn.push(rt['ISSN (print)'].trim().toUpperCase()) if typeof rt['ISSN (print)'] is 'string' and rt['ISSN (print)'].length
-      rt.issn.push(rt['ISSN (online)'].trim().toUpperCase()) if typeof rt['ISSN (online)'] is 'string' and rt['ISSN (online)'].length
-      rt.position = if typeof rt.Position is 'number' then rt.Position else parseInt rt.Position.trim()
+      rt.issn.push(rt['ISSN (electronic)'].trim().toUpperCase()) if typeof rt['ISSN (electronic)'] is 'string' and rt['ISSN (electronic)'].length
       rt.publisher = rt.Publisher.trim() if typeof rt.Publisher is 'string'
-      if rt.issn.length and rt.position? and typeof rt.position is 'number' and rt.position isnt null and not isNaN rt.position
+      if rt.issn.length
         if exists = jct_journal.find 'issn.exact:"' + rt.issn.join('" OR issn.exact:"') + '"'
           upd = {}
-          for isn in rec.issn
+          for isn in rt.issn
             if isn not in exists.issn
               upd.issn ?= []
               upd.issn.push isn
-          upd.retained = true if exists.retained isnt true
+          upd.retained = false if exists.retained isnt false
           upd.retention = rt if not exists.retention?
           if JSON.stringify(upd) isnt '{}'
             for en in exists.issn
               upd.issn.push(en) if typeof en is 'string' and en.length and en not in upd.issn
             jct_journal.update exists._id, upd
         else
-          rec = retained: true, retention: rt, issn: rt.issn, publisher: rt.publisher, title: rt.journal
+          rec = retained: false, retention: rt, issn: rt.issn, publisher: rt.publisher, title: rt.journal
           jct_journal.insert rec
 
   if issn
@@ -663,23 +663,19 @@ API.service.jct.retention = (issn, refresh) ->
       issn: issn
       log: []
 
-    if exists = jct_journal.find 'retained:true AND (issn.exact:"' + issn.join('" OR issn.exact:"') + '")'
-      if exists.position is 5 # if present and 5, not compliant
-        delete res.qualifications
-        res.log.push code: 'SA.NonCompliant'
-        res.compliant = 'no'
-      else
-        res.log.push code: 'SA.Compliant'
-        # https://github.com/antleaf/jct-project/issues/215#issuecomment-726761965
-        # if present and any other number, or no answer, then compliant with some funder quals - so what funder quals to add?
-        # no funder quals now due to change at end of October 2020. May be introduced again later
+    if exists = jct_journal.find 'retained:false AND (issn.exact:"' + issn.join('" OR issn.exact:"') + '")'
+      delete res.qualifications
+      res.log.push code: 'SA.RRException'
+      res.log.push code: 'SA.NonCompliant'
+      res.compliant = 'no'
+      # new log code also states there should be an SA.Unknown, but given we default to
+      # Non compliant at the moment, I don't see a way to achieve that, so set as Non Compliant for now
     else
-      # new log code algo states there should be an SA.Unknown, but given we default to 
-      # compliant at the moment, I don't see a way to achieve that, so set as Compliant for now
-      res.log.push(code: 'SA.Compliant') if res.log.length is 0
+      res.log.push code: 'SA.RRNoException'
+      res.log.push code: 'SA.Compliant'
     return res
   else
-    return jct_journal.count 'retained:true'
+    return jct_journal.count 'retained:false'
 
 
 API.service.jct.permission = (issn, institution) ->
