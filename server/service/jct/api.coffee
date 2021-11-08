@@ -156,7 +156,7 @@ API.add 'service/jct/funder_config',
     return jct_funder_config.search this.queryParams
 API.add 'service/jct/funder_config/import',
   get: () ->
-    Meteor.setTimeout (() => API.service.jct.import_funder_config), 1
+    Meteor.setTimeout (() => API.service.jct.import_funder_config()), 1
     return true
 
 API.add 'service/jct/funder_language',
@@ -164,7 +164,7 @@ API.add 'service/jct/funder_language',
     return jct_funder_language.search this.queryParams
 API.add 'service/jct/funder_language/import',
   get: () ->
-    Meteor.setTimeout (() => API.service.jct.import_funder_language), 1
+    Meteor.setTimeout (() => API.service.jct.import_funder_language()), 1
     return true
 
 
