@@ -1,3 +1,3 @@
 [submodule "jct-funderdb"]
 	path = jct-funderdb
-	url = git@github.com:CottageLabs/jct-funderdb.git
+	url = https://github.com/CottageLabs/jct-funderdb.git
