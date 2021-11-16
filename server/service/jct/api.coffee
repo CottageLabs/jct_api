@@ -694,7 +694,8 @@ API.service.jct.permission = (issn, institution) ->
     log: []
 
   try
-    perms = HTTP.call('GET', 'https://api.openaccessbutton.org/permissions?meta=false&issn=' + (if typeof issn is 'string' then issn else issn.join(',')) + (if typeof institution is 'string' then '&ror=' + institution else if institution? and Array.isArray(institution) and institution.length then '&ror=' + institution.join(',') else '')).data
+    permsurl = 'https://api.openaccessbutton.org/permissions?meta=false&issn=' + (if typeof issn is 'string' then issn else issn.join(',')) + (if typeof institution is 'string' then '&ror=' + institution else if institution? and Array.isArray(institution) and institution.length then '&ror=' + institution.join(',') else '')
+    perms = HTTP.call('GET', permsurl, {timeout:3000}).data
     if perms.best_permission?
       res.compliant = 'no' # set to no until a successful route through is found
       pb = perms.best_permission
@@ -728,7 +729,9 @@ API.service.jct.permission = (issn, institution) ->
     else
       res.log.push code: 'SA.NotInOAB'
   catch
-    res.log.push code: 'SA.NotInOAB'
+    # Fixme: if we don't get an answer then we don't have the info, but this may not be strictly what we want.
+    res.log.push code: 'SA.OABIncomplete', parameters: missing: ['licences']
+    res.compliant = 'unknown'
   return res
 
 
