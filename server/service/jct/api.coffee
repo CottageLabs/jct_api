@@ -780,7 +780,7 @@ API.service.jct.permission = (issn, institution) ->
 
 
 # Calculate self archiving check. It combines, sa_prohibited, OA.works permission and rr checks
-API.service.jct.sa = (journal, institution, funder, retention, sa_prohibition) ->
+API.service.jct.sa = (journal, institution, funder, retention=true, sa_prohibition=true) ->
   # Get SA prohibition
   if journal and sa_prohibition
     res_sa = API.service.jct.sa_prohibited journal, undefined
