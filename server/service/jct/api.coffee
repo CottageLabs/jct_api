@@ -1,4 +1,3 @@
-
 import moment from 'moment'
 import mailgun from 'mailgun-js'
 import fs from 'fs'
@@ -77,6 +76,14 @@ API.add 'service/jct/ta',
 API.add 'service/jct/ta/import', 
   get: () -> 
     Meteor.setTimeout (() => API.service.jct.ta.import this.queryParams.mail), 1
+    return true
+
+API.add 'service/jct/sa_prohibited',
+  get: () ->
+    return API.service.jct.sa_prohibited this.queryParams.issn
+API.add 'service/jct/sa_prohibited/import',
+  get: () ->
+    Meteor.setTimeout (() => API.service.jct.sa_prohibited undefined, true), 1
     return true
 
 API.add 'service/jct/retention', 
@@ -324,7 +331,10 @@ API.service.jct.calculate = (params={}, refresh, checks=['permission', 'doaj', '
               # funder allows if their rights retention date 
               if journal and funder? and fndr = API.service.jct.funders funder
                 r.funder = funder
-                if fndr.retentionAt? and (fndr.retentionAt is 1609459200000 or fndr.retentionAt >= Date.now())
+                # 1609459200000 = Wed Sep 25 52971
+                # if fndr.retentionAt? and (fndr.retentionAt is 1609459200000 or fndr.retentionAt >= Date.now())
+                # if retentionAt is in past - active - https://github.com/antleaf/jct-project/issues/437
+                if fndr.retentionAt? and fndr.retentionAt < Date.now()
                   r.log.push code: 'SA.FunderRRActive'
                   # 26032021, as per https://github.com/antleaf/jct-project/issues/380
                   # rights retention qualification disabled
@@ -614,6 +624,62 @@ API.service.jct.tj = (issn, refresh) ->
     return jct_journal.count 'tj:true'
 
 
+# Import and check for Self-archiving prohibited list
+# https://github.com/antleaf/jct-project/issues/406
+# If journal in list, sa check not compliant
+API.service.jct.sa_prohibited = (issn, refresh) ->
+# check the sa prohibited data source first, to check if retained is false
+# If retained is false, SA check is not compliant.
+# will be a list of journals by ISSN
+  if refresh
+    counter = 0
+    for rt in API.service.jct.csv2json 'https://docs.google.com/spreadsheets/d/e/2PACX-1vQ0EEMZTikcQZV28BiCL4huv-r0RnHiDrU08j3W1fyERNasoJYuAZek5G3oQH1TUKmf_X-yC5SiHaBM/pub?gid=0&single=true&output=csv'
+      counter += 1
+      console.log('sa prohibited import ' + counter) if counter % 20 is 0
+      rt.journal = rt['Journal Title'].trim() if typeof rt['Journal Title'] is 'string'
+      rt.issn = []
+      rt.issn.push(rt['ISSN (print)'].trim().toUpperCase()) if typeof rt['ISSN (print)'] is 'string' and rt['ISSN (print)'].length
+      rt.issn.push(rt['ISSN (electronic)'].trim().toUpperCase()) if typeof rt['ISSN (electronic)'] is 'string' and rt['ISSN (electronic)'].length
+      rt.publisher = rt.Publisher.trim() if typeof rt.Publisher is 'string'
+      if rt.issn.length
+        if exists = jct_journal.find 'issn.exact:"' + rt.issn.join('" OR issn.exact:"') + '"'
+          upd = {}
+          for isn in rt.issn
+            if isn not in exists.issn
+              upd.issn ?= []
+              upd.issn.push isn
+          upd.sa_prohibited = true if exists.sa_prohibited isnt true
+          upd.retention = rt
+          if JSON.stringify(upd) isnt '{}'
+            for en in exists.issn
+              upd.issn.push(en) if typeof en is 'string' and en.length and en not in upd.issn
+            jct_journal.update exists._id, upd
+        else
+          rec = sa_prohibited: true, retention: rt, issn: rt.issn, publisher: rt.publisher, title: rt.journal
+          jct_journal.insert rec
+    console.log('Imported ' + counter)
+
+  if issn
+    issn = [issn] if typeof issn is 'string'
+    res =
+      route: 'self_archiving'
+      compliant: 'unknown'
+      qualifications: undefined
+      issn: issn
+      ror: undefined
+      funder: undefined
+      log: []
+
+    if exists = jct_journal.find 'sa_prohibited:true AND (issn.exact:"' + issn.join('" OR issn.exact:"') + '")'
+      res.log.push code: 'SA.RRException'
+      res.compliant = 'no'
+    else
+      res.log.push code: 'SA.RRNoException'
+    return res
+  else
+    return jct_journal.count 'sa_prohibited:true'
+
+
 # what are these qualifications relevant to? TAs?
 # there is no funder qualification done now, due to retention policy change decision at ened of October 2020. May be added again later.
 # rights_retention_author_advice - 
@@ -628,7 +694,7 @@ API.service.jct.retention = (issn, refresh) ->
   # will be a list of journals by ISSN and a number 1,2,3,4,5
   if refresh
     counter = 0
-    for rt in API.service.jct.csv2json 'https://docs.google.com/spreadsheets/d/e/2PACX-1vTVZwZtdYSUFfKVRGO3jumQcLEjtnbdbw7yJ4LvfC2noYn3IwuTDjA9CEjzSaZjX8QVkWijqa3rmicY/pub?gid=0&single=true&output=csv'
+    for rt in API.service.jct.csv2json 'https://docs.google.com/spreadsheets/d/e/2PACX-1vTm6sDI16Kin3baNWaAiMUfGdMEUEGXy0LRvSDnvAQTWDN_exlYGyv4gnstGKdv3rXshjSa7AUWtAc5/pub?gid=0&single=true&output=csv'
       counter += 1
       console.log('Retention import ' + counter) if counter % 20 is 0
       rt.journal = rt['Journal Name'].trim() if typeof rt['Journal Name'] is 'string'
@@ -640,12 +706,12 @@ API.service.jct.retention = (issn, refresh) ->
       if rt.issn.length and rt.position? and typeof rt.position is 'number' and rt.position isnt null and not isNaN rt.position
         if exists = jct_journal.find 'issn.exact:"' + rt.issn.join('" OR issn.exact:"') + '"'
           upd = {}
-          for isn in rec.issn
+          for isn in rt.issn
             if isn not in exists.issn
               upd.issn ?= []
               upd.issn.push isn
           upd.retained = true if exists.retained isnt true
-          upd.retention = rt if not exists.retention?
+          upd.retention = rt
           if JSON.stringify(upd) isnt '{}'
             for en in exists.issn
               upd.issn.push(en) if typeof en is 'string' and en.length and en not in upd.issn
@@ -653,6 +719,7 @@ API.service.jct.retention = (issn, refresh) ->
         else
           rec = retained: true, retention: rt, issn: rt.issn, publisher: rt.publisher, title: rt.journal
           jct_journal.insert rec
+    console.log('Imported ' + counter)
 
   if issn
     issn = [issn] if typeof issn is 'string'
@@ -664,8 +731,9 @@ API.service.jct.retention = (issn, refresh) ->
       log: []
 
     if exists = jct_journal.find 'retained:true AND (issn.exact:"' + issn.join('" OR issn.exact:"') + '")'
+      # https://github.com/antleaf/jct-project/issues/406 no qualification needed if retained is true
+      delete res.qualifications
       if exists.position is 5 # if present and 5, not compliant
-        delete res.qualifications
         res.log.push code: 'SA.NonCompliant'
         res.compliant = 'no'
       else
@@ -988,6 +1056,10 @@ API.service.jct.import = (refresh) ->
     console.log 'Starting TJs import'
     res.tj = API.service.jct.tj undefined, true
     console.log 'JCT import TJs complete'
+
+    console.log 'Starting sa prohibited data import'
+    res.retention = API.service.jct.sa_prohibited undefined, true
+    console.log 'JCT import sa prohibited data complete'
 
     console.log 'Starting retention data import'
     res.retention = API.service.jct.retention undefined, true
