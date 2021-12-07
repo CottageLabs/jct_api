@@ -682,7 +682,7 @@ API.service.jct.retention = (issn, refresh) ->
       rt.issn.push(rt['ISSN (online)'].trim().toUpperCase()) if typeof rt['ISSN (online)'] is 'string' and rt['ISSN (online)'].length
       rt.position = if typeof rt.Position is 'number' then rt.Position else parseInt rt.Position.trim()
       rt.publisher = rt.Publisher.trim() if typeof rt.Publisher is 'string'
-      if rt.issn.length and rt.position? and typeof rt.position is 'number' and rt.position isnt null and not isNaN rt.position
+      if rt.issn.length
         if exists = jct_journal.find 'issn.exact:"' + rt.issn.join('" OR issn.exact:"') + '"'
           upd = {}
           upd.issn ?= []
@@ -710,16 +710,9 @@ API.service.jct.retention = (issn, refresh) ->
       log: []
 
     if exists = jct_journal.find 'retained:true AND (issn.exact:"' + issn.join('" OR issn.exact:"') + '")'
-      # https://github.com/antleaf/jct-project/issues/406 no qualification needed if retained is true
+      # https://github.com/antleaf/jct-project/issues/406 no qualification needed if retained is true. Position not used.
       delete res.qualifications
-      if exists.position is 5 # if present and 5, not compliant
-        res.log.push code: 'SA.NonCompliant'
-        res.compliant = 'no'
-      else
-        res.log.push code: 'SA.Compliant'
-        # https://github.com/antleaf/jct-project/issues/215#issuecomment-726761965
-        # if present and any other number, or no answer, then compliant with some funder quals - so what funder quals to add?
-        # no funder quals now due to change at end of October 2020. May be introduced again later
+      res.log.push code: 'SA.Compliant'
     else
       # new log code algo states there should be an SA.Unknown, but given we default to 
       # compliant at the moment, I don't see a way to achieve that, so set as Compliant for now
