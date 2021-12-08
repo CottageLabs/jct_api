@@ -2,11 +2,14 @@
 import moment from 'moment'
 import mailgun from 'mailgun-js'
 import fs from 'fs'
+import path from 'path'
 import tar from 'tar'
 import Future from 'fibers/future'
 import { Random } from 'meteor/random'
 import unidecode from 'unidecode'
 import csvtojson from 'csvtojson'
+import jsYaml from 'js-yaml'
+import { Match } from 'meteor/check'
 import stream from 'stream'
 
 '''
@@ -53,6 +56,8 @@ jct_journal = new API.collection {index:"jct", type:"journal"}
 jct_agreement = new API.collection {index:"jct", type:"agreement"}
 jct_compliance = new API.collection {index:"jct", type:"compliance"}
 jct_unknown = new API.collection {index:"jct", type:"unknown"}
+jct_funder_config = new API.collection {index:"jct", type:"funder_config"}
+jct_funder_language = new API.collection {index:"jct", type:"funder_language"}
 
 
 # define endpoints that the JCT requires (to be served at a dedicated domain)
@@ -146,6 +151,21 @@ API.add 'service/jct/compliance', get: () -> return jct_compliance.search this.q
 
 API.add 'service/jct/test', get: () -> return API.service.jct.test this.queryParams
 
+API.add 'service/jct/funder_config',
+  get: () ->
+    return jct_funder_config.search this.queryParams
+API.add 'service/jct/funder_config/import',
+  get: () ->
+    Meteor.setTimeout (() => API.service.jct.import_funder_config()), 1
+    return true
+
+API.add 'service/jct/funder_language',
+  get: () ->
+    return jct_funder_language.search this.queryParams
+API.add 'service/jct/funder_language/import',
+  get: () ->
+    Meteor.setTimeout (() => API.service.jct.import_funder_language()), 1
+    return true
 
 
 _jct_clean = (str) ->
@@ -1004,7 +1024,15 @@ API.service.jct.import = (refresh) ->
     console.log 'Starting TAs data import'
     res.ta = API.service.jct.ta.import false # this is the slowest, takes about twenty minutes
     console.log 'JCT import TAs complete'
-  
+
+    console.log 'Starting Funder db config import'
+    API.service.jct.import_funder_config()
+    console.log 'JCT import Funder db config complete'
+
+    console.log 'Starting Funder db language import'
+    API.service.jct.import_funder_language()
+    console.log 'JCT import Funder db language complete'
+
     # check the mappings on jct_journal, jct_agreement, any others that get used and changed during import
     # include a warning in the email if they seem far out of sync
     # and include the previously and presently count, they should not be too different
@@ -1312,3 +1340,88 @@ API.service.jct.test = (params={}) ->
   return res
 
 
+# For each funder in jct-funderdb repo, get the final funder configuration
+# The funder's specific config file gets merged with the default config file, to create the final config file
+# This is saved in elastic search
+API.service.jct.import_funder_config = () ->
+  funderdb_path = path.join(process.env.PWD, API.settings.funderdb)
+  default_config_file = path.join(funderdb_path, 'default', 'config.yml')
+  default_config = jsYaml.load(fs.readFileSync(default_config_file, 'utf8'));
+  funders_config = []
+  # For each funder in directory
+  for f in fs.readdirSync funderdb_path
+    # parse and get the merged config file if it isn't default
+    if f isnt 'default'
+      funder_config_file = path.join(funderdb_path, f, 'config.yml')
+      if fs.existsSync funder_config_file
+        funder_config = jsYaml.load(fs.readFileSync(funder_config_file, 'utf8'));
+        merged_config = _merge_funder_config(default_config, funder_config)
+        funders_config.push(merged_config)
+  if funders_config.length
+    console.log 'Removing and reloading ' + funders_config.length + ' funders configuration'
+    jct_funder_config.remove '*'
+    jct_funder_config.insert funders_config
+  return
+
+# For each funder in jct-funderdb repo, get the final funder language file
+# The funder's specific language files get merged with the default language files, to create the final language file
+# This is saved in elastic search
+API.service.jct.import_funder_language = () ->
+  funderdb_path = path.join(process.env.PWD, API.settings.funderdb)
+  default_lang_files_path = path.join(funderdb_path, 'default', 'lang')
+  default_language = _flatten_yaml_files(default_lang_files_path)
+  funders_language = []
+  for f in fs.readdirSync funderdb_path
+    # parse and get the merged config file if it isn't default
+    if f isnt 'default'
+      funder_lang_files_path = path.join(funderdb_path, f, 'lang')
+      if fs.existsSync funder_lang_files_path
+        merged_lang = _merge_language_files(default_language, funder_lang_files_path)
+        merged_lang['id'] = f
+        funders_language.push(merged_lang)
+      else
+        merged_lang = JSON.parse(JSON.stringify(default_language))
+        merged_lang['id'] = f
+        funders_language.push(merged_lang)
+  if funders_language.length
+    console.log 'Removing and reloading ' + funders_language.length + ' funders language files'
+    jct_funder_language.remove '*'
+    jct_funder_language.insert funders_language
+  return
+
+_merge_funder_config = (default_config, funder_config) ->
+  result = _jct_object_merge(default_config, funder_config)
+  return result
+
+_merge_language_files = (default_language, language_files_path) ->
+  funder_lang = _flatten_yaml_files(language_files_path)
+  result = _jct_object_merge(default_language, funder_lang)
+  return result
+
+_jct_object_merge = (default_object, specific_object) ->
+  result = JSON.parse(JSON.stringify(default_object)) # deep copy object
+  for key in Object.keys(specific_object)
+    # If specific_object[key] is an object and the key exists in default_object
+    if Match.test(specific_object[key], Object)
+      if key in Object.keys(default_object)
+        result[key] = _jct_object_merge(default_object[key], specific_object[key])
+      else
+        result[key] = specific_object[key]
+    else
+      result[key] = specific_object[key]
+  return result
+
+_flatten_yaml_files = (lang_files_path) ->
+  flattened_config = {}
+  if not fs.existsSync lang_files_path
+    return flattened_config
+  if not fs.lstatSync(lang_files_path).isDirectory()
+    return flattened_config
+  for sub_file_name in fs.readdirSync lang_files_path
+    sub_file_path = path.join(lang_files_path, sub_file_name)
+    if fs.existsSync(sub_file_path) && fs.lstatSync(sub_file_path).isDirectory()
+      flattened_config[sub_file_name] = _flatten_yaml_files(sub_file_path)
+    else
+      menu = sub_file_name.split('.')[0]
+      flattened_config[menu] = jsYaml.load(fs.readFileSync(sub_file_path, 'utf8'));
+  return flattened_config
