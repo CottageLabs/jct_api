@@ -1,4 +1,3 @@
-
 import moment from 'moment'
 import mailgun from 'mailgun-js'
 import fs from 'fs'
@@ -77,6 +76,14 @@ API.add 'service/jct/ta',
 API.add 'service/jct/ta/import', 
   get: () -> 
     Meteor.setTimeout (() => API.service.jct.ta.import this.queryParams.mail), 1
+    return true
+
+API.add 'service/jct/sa_prohibited',
+  get: () ->
+    return API.service.jct.sa_prohibited this.queryParams.issn
+API.add 'service/jct/sa_prohibited/import',
+  get: () ->
+    Meteor.setTimeout (() => API.service.jct.sa_prohibited undefined, true), 1
     return true
 
 API.add 'service/jct/retention', 
@@ -260,7 +267,7 @@ API.service.jct.suggest.journal = (str, from, size) ->
   return total: res?.hits?.total ? 0, data: _.union starts.sort((a, b) -> return a.title.length - b.title.length), extra.sort((a, b) -> return a.title.length - b.title.length)
 
 
-API.service.jct.calculate = (params={}, refresh, checks=['permission', 'doaj', 'ta', 'tj'], retention=true) ->
+API.service.jct.calculate = (params={}, refresh, checks=['sa', 'doaj', 'ta', 'tj'], retention=true, sa_prohibition=true) ->
   # given funder(s), journal(s), institution(s), find out if compliant or not
   # note could be given lists of each - if so, calculate all and return a list
   if params.issn
@@ -310,36 +317,18 @@ API.service.jct.calculate = (params={}, refresh, checks=['permission', 'doaj', '
     hascompliant = false
     allcached = true
     _results = []
-    cr = permission: ('permission' in checks), doaj: ('doaj' in checks), ta: ('ta' in checks), tj: ('tj' in checks)
+    cr = sa: ('sa' in checks), doaj: ('doaj' in checks), ta: ('ta' in checks), tj: ('tj' in checks)
 
-    _rtn = {}
     _ck = (which) ->
       allcached = false
       Meteor.setTimeout () ->
-        if rs = API.service.jct[which] (issnsets[journal] ? journal), (if institution? and which in ['permission','ta'] then institution else undefined)
+        if which is 'sa'
+          rs = API.service.jct.sa (issnsets[journal] ? journal), (if institution? then institution else undefined), funder, retention, sa_prohibition
+        else
+          rs = API.service.jct[which] (issnsets[journal] ? journal), (if institution? and which is 'ta' then institution else undefined)
+        if rs
           for r in (if _.isArray(rs) then rs else [rs])
             hascompliant = true if r.compliant is 'yes'
-            if which is 'permission' and r.compliant isnt 'yes' and retention
-              # only check retention if the funder allows it - and only if there IS a funder
-              # funder allows if their rights retention date 
-              if journal and funder? and fndr = API.service.jct.funders funder
-                r.funder = funder
-                if fndr.retentionAt? and (fndr.retentionAt is 1609459200000 or fndr.retentionAt >= Date.now())
-                  r.log.push code: 'SA.FunderRRActive'
-                  # 26032021, as per https://github.com/antleaf/jct-project/issues/380
-                  # rights retention qualification disabled
-                  #r.qualifications ?= []
-                  #r.qualifications.push 'rights_retention_funder_implementation': funder: funder, date: moment(fndr.retentionAt).format 'YYYY-MM-DD'
-                  # retention is a special case on permissions, done this way so can be easily disabled for testing
-                  _rtn[journal] ?= API.service.jct.retention journal
-                  r.compliant = _rtn[journal].compliant
-                  hascompliant = true if r.compliant is 'yes'
-                  r.log.push(lg) for lg in _rtn[journal].log
-                  if _rtn[journal].qualifications? and _rtn[journal].qualifications.length
-                    r.qualifications ?= []
-                    r.qualifications.push(ql) for ql in _rtn[journal].qualifications
-                else
-                  r.log.push code: 'SA.FunderRRNotActive'
             if r.compliant is 'unknown'
               API.service.jct.unknown r, funder, journal, institution
             _results.push r
@@ -348,7 +337,7 @@ API.service.jct.calculate = (params={}, refresh, checks=['permission', 'doaj', '
     for c in checks
       _ck(c) if cr[c]
 
-    while cr.permission is true or cr.doaj is true or cr.ta is true or cr.tj is true
+    while cr.sa is true or cr.doaj is true or cr.ta is true or cr.tj is true
       future = new Future()
       Meteor.setTimeout (() -> future.return()), 100
       future.wait()
@@ -614,6 +603,62 @@ API.service.jct.tj = (issn, refresh) ->
     return jct_journal.count 'tj:true'
 
 
+# Import and check for Self-archiving prohibited list
+# https://github.com/antleaf/jct-project/issues/406
+# If journal in list, sa check not compliant
+API.service.jct.sa_prohibited = (issn, refresh) ->
+# check the sa prohibited data source first, to check if retained is false
+# If retained is false, SA check is not compliant.
+# will be a list of journals by ISSN
+  if refresh
+    counter = 0
+    for rt in API.service.jct.csv2json 'https://docs.google.com/spreadsheets/d/e/2PACX-1vQ0EEMZTikcQZV28BiCL4huv-r0RnHiDrU08j3W1fyERNasoJYuAZek5G3oQH1TUKmf_X-yC5SiHaBM/pub?gid=0&single=true&output=csv'
+      counter += 1
+      console.log('sa prohibited import ' + counter) if counter % 20 is 0
+      rt.journal = rt['Journal Title'].trim() if typeof rt['Journal Title'] is 'string'
+      rt.issn = []
+      rt.issn.push(rt['ISSN (print)'].trim().toUpperCase()) if typeof rt['ISSN (print)'] is 'string' and rt['ISSN (print)'].length
+      rt.issn.push(rt['ISSN (electronic)'].trim().toUpperCase()) if typeof rt['ISSN (electronic)'] is 'string' and rt['ISSN (electronic)'].length
+      rt.publisher = rt.Publisher.trim() if typeof rt.Publisher is 'string'
+      if rt.issn.length
+        if exists = jct_journal.find 'issn.exact:"' + rt.issn.join('" OR issn.exact:"') + '"'
+          upd = {}
+          upd.issn ?= []
+          for isn in rt.issn
+            if isn not in exists.issn
+              upd.issn.push isn
+          upd.sa_prohibited = true if exists.sa_prohibited isnt true
+          upd.retention = rt
+          if JSON.stringify(upd) isnt '{}'
+            for en in exists.issn
+              upd.issn.push(en) if typeof en is 'string' and en.length and en not in upd.issn
+            jct_journal.update exists._id, upd
+        else
+          rec = sa_prohibited: true, retention: rt, issn: rt.issn, publisher: rt.publisher, title: rt.journal
+          jct_journal.insert rec
+    console.log('Imported ' + counter)
+
+  if issn
+    issn = issn.split(',') if typeof issn is 'string'
+    res =
+      route: 'self_archiving'
+      compliant: 'unknown'
+      qualifications: undefined
+      issn: issn
+      ror: undefined
+      funder: undefined
+      log: []
+
+    if exists = jct_journal.find 'sa_prohibited:true AND (issn.exact:"' + issn.join('" OR issn.exact:"') + '")'
+      res.log.push code: 'SA.RRException'
+      res.compliant = 'no'
+    else
+      res.log.push code: 'SA.RRNoException'
+    return res
+  else
+    return jct_journal.count 'sa_prohibited:true'
+
+
 # what are these qualifications relevant to? TAs?
 # there is no funder qualification done now, due to retention policy change decision at ened of October 2020. May be added again later.
 # rights_retention_author_advice - 
@@ -628,7 +673,7 @@ API.service.jct.retention = (issn, refresh) ->
   # will be a list of journals by ISSN and a number 1,2,3,4,5
   if refresh
     counter = 0
-    for rt in API.service.jct.csv2json 'https://docs.google.com/spreadsheets/d/e/2PACX-1vTVZwZtdYSUFfKVRGO3jumQcLEjtnbdbw7yJ4LvfC2noYn3IwuTDjA9CEjzSaZjX8QVkWijqa3rmicY/pub?gid=0&single=true&output=csv'
+    for rt in API.service.jct.csv2json 'https://docs.google.com/spreadsheets/d/e/2PACX-1vTm6sDI16Kin3baNWaAiMUfGdMEUEGXy0LRvSDnvAQTWDN_exlYGyv4gnstGKdv3rXshjSa7AUWtAc5/pub?gid=0&single=true&output=csv'
       counter += 1
       console.log('Retention import ' + counter) if counter % 20 is 0
       rt.journal = rt['Journal Name'].trim() if typeof rt['Journal Name'] is 'string'
@@ -637,15 +682,15 @@ API.service.jct.retention = (issn, refresh) ->
       rt.issn.push(rt['ISSN (online)'].trim().toUpperCase()) if typeof rt['ISSN (online)'] is 'string' and rt['ISSN (online)'].length
       rt.position = if typeof rt.Position is 'number' then rt.Position else parseInt rt.Position.trim()
       rt.publisher = rt.Publisher.trim() if typeof rt.Publisher is 'string'
-      if rt.issn.length and rt.position? and typeof rt.position is 'number' and rt.position isnt null and not isNaN rt.position
+      if rt.issn.length
         if exists = jct_journal.find 'issn.exact:"' + rt.issn.join('" OR issn.exact:"') + '"'
           upd = {}
-          for isn in rec.issn
+          upd.issn ?= []
+          for isn in rt.issn
             if isn not in exists.issn
-              upd.issn ?= []
               upd.issn.push isn
           upd.retained = true if exists.retained isnt true
-          upd.retention = rt if not exists.retention?
+          upd.retention = rt
           if JSON.stringify(upd) isnt '{}'
             for en in exists.issn
               upd.issn.push(en) if typeof en is 'string' and en.length and en not in upd.issn
@@ -653,6 +698,7 @@ API.service.jct.retention = (issn, refresh) ->
         else
           rec = retained: true, retention: rt, issn: rt.issn, publisher: rt.publisher, title: rt.journal
           jct_journal.insert rec
+    console.log('Imported ' + counter)
 
   if issn
     issn = [issn] if typeof issn is 'string'
@@ -664,15 +710,9 @@ API.service.jct.retention = (issn, refresh) ->
       log: []
 
     if exists = jct_journal.find 'retained:true AND (issn.exact:"' + issn.join('" OR issn.exact:"') + '")'
-      if exists.position is 5 # if present and 5, not compliant
-        delete res.qualifications
-        res.log.push code: 'SA.NonCompliant'
-        res.compliant = 'no'
-      else
-        res.log.push code: 'SA.Compliant'
-        # https://github.com/antleaf/jct-project/issues/215#issuecomment-726761965
-        # if present and any other number, or no answer, then compliant with some funder quals - so what funder quals to add?
-        # no funder quals now due to change at end of October 2020. May be introduced again later
+      # https://github.com/antleaf/jct-project/issues/406 no qualification needed if retained is true. Position not used.
+      delete res.qualifications
+      res.log.push code: 'SA.Compliant'
     else
       # new log code algo states there should be an SA.Unknown, but given we default to 
       # compliant at the moment, I don't see a way to achieve that, so set as Compliant for now
@@ -733,6 +773,57 @@ API.service.jct.permission = (issn, institution) ->
     res.log.push code: 'SA.OABIncomplete', parameters: missing: ['licences']
     res.compliant = 'unknown'
   return res
+
+
+# Calculate self archiving check. It combines, sa_prohibited, OA.works permission and rr checks
+API.service.jct.sa = (journal, institution, funder, retention=true, sa_prohibition=true) ->
+  # Get SA prohibition
+  if journal and sa_prohibition
+    res_sa = API.service.jct.sa_prohibited journal, undefined
+    if res_sa and res_sa.compliant is 'no'
+      return res_sa
+
+  # Get OA.Works permission
+  rs = API.service.jct.permission journal, institution
+
+  # merge the qualifications and logs from SA prohibition into OA.Works permission
+  rs.qualifications ?= []
+  if res_sa.qualifications? and res_sa.qualifications.length
+    for q in (if _.isArray(res_sa.qualifications) then res_sa.qualifications else [res_sa.qualifications])
+      rs.qualifications.push(q)
+  rs.log ?= []
+  if res_sa.log? and res_sa.log.length
+    for l in (if _.isArray(res_sa.log) then res_sa.log else [res_sa.log])
+      rs.log.push(l)
+
+  # check for retention
+  if rs
+    _rtn = {}
+    for r in (if _.isArray(rs) then rs else [rs])
+      if r.compliant isnt 'yes' and retention
+        # only check retention if the funder allows it - and only if there IS a funder
+        # funder allows if their rights retention date
+        if journal and funder? and fndr = API.service.jct.funders funder
+          r.funder = funder
+          # 1609459200000 = Wed Sep 25 52971
+          # if fndr.retentionAt? and (fndr.retentionAt is 1609459200000 or fndr.retentionAt >= Date.now())
+          # if retentionAt is in past - active - https://github.com/antleaf/jct-project/issues/437
+          if fndr.retentionAt? and fndr.retentionAt < Date.now()
+            r.log.push code: 'SA.FunderRRActive'
+            # 26032021, as per https://github.com/antleaf/jct-project/issues/380
+            # rights retention qualification disabled
+            #r.qualifications ?= []
+            #r.qualifications.push 'rights_retention_funder_implementation': funder: funder, date: moment(fndr.retentionAt).format 'YYYY-MM-DD'
+            # retention is a special case on permissions, done this way so can be easily disabled for testing
+            _rtn[journal] ?= API.service.jct.retention journal
+            r.compliant = _rtn[journal].compliant
+            r.log.push(lg) for lg in _rtn[journal].log
+            if _rtn[journal].qualifications? and _rtn[journal].qualifications.length
+              r.qualifications ?= []
+              r.qualifications.push(ql) for ql in _rtn[journal].qualifications
+          else
+            r.log.push code: 'SA.FunderRRNotActive'
+  return rs
 
 
 API.service.jct.doaj = (issn) ->
@@ -992,6 +1083,10 @@ API.service.jct.import = (refresh) ->
     res.tj = API.service.jct.tj undefined, true
     console.log 'JCT import TJs complete'
 
+    console.log 'Starting sa prohibited data import'
+    res.retention = API.service.jct.sa_prohibited undefined, true
+    console.log 'JCT import sa prohibited data complete'
+
     console.log 'Starting retention data import'
     res.retention = API.service.jct.retention undefined, true
     console.log 'JCT import retention data complete'
@@ -1182,6 +1277,7 @@ API.service.jct.test = (params={}) ->
   # Actual JCT Outcome is what was obtained by walking through the algorithm under the assumption that 
   # the publicly available information is within the JCT data sources.
   params.refresh = true
+  params.sa_prohibition = true if not params.sa_prohibition?
   params.test = params.tests if params.tests?
   params.test = params.test.toString() if typeof params.test is 'number'
   if typeof params.test is 'string'
@@ -1301,7 +1397,7 @@ API.service.jct.test = (params={}) ->
             ans.discovered[if k is 'journal' then 'issn' else if k is 'institution' then 'ror' else 'funder'].push API.service.jct.suggest[k](j).data[0].id
           catch
             console.log k, j
-      ans.result = API.service.jct.calculate {funder: ans.discovered.funder, issn: ans.discovered.issn, ror: ans.discovered.ror}, params.refresh, params.checks, params.retention
+      ans.result = API.service.jct.calculate {funder: ans.discovered.funder, issn: ans.discovered.issn, ror: ans.discovered.ror}, params.refresh, params.checks, params.retention, params.sa_prohibition
       ans.pass = queries[q].test ans.result
       if ans.pass isnt true
         res.pass = false
