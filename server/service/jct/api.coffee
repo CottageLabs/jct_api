@@ -267,7 +267,7 @@ API.service.jct.suggest.journal = (str, from, size) ->
   return total: res?.hits?.total ? 0, data: _.union starts.sort((a, b) -> return a.title.length - b.title.length), extra.sort((a, b) -> return a.title.length - b.title.length)
 
 
-API.service.jct.calculate = (params={}, refresh, checks=['sa', 'doaj', 'ta', 'tj'], retention=true, sa_prohibition=true) ->
+API.service.jct.calculate = (params={}, refresh, checks=['sa', 'doaj', 'ta', 'tj', 'hybrid'], retention=true, sa_prohibition=true) ->
   # given funder(s), journal(s), institution(s), find out if compliant or not
   # note could be given lists of each - if so, calculate all and return a list
   if params.issn
@@ -317,13 +317,18 @@ API.service.jct.calculate = (params={}, refresh, checks=['sa', 'doaj', 'ta', 'tj
     hascompliant = false
     allcached = true
     _results = []
-    cr = sa: ('sa' in checks), doaj: ('doaj' in checks), ta: ('ta' in checks), tj: ('tj' in checks)
+
+    oa_permissions = API.service.jct.oa_works (issnsets[journal] ? journal), (if institution? then institution else undefined)
+
+    cr = sa: ('sa' in checks), doaj: ('doaj' in checks), ta: ('ta' in checks), tj: ('tj' in checks), hybrid: ('hybrid' in checks)
 
     _ck = (which) ->
       allcached = false
       Meteor.setTimeout () ->
         if which is 'sa'
-          rs = API.service.jct.sa (issnsets[journal] ? journal), (if institution? then institution else undefined), funder, retention, sa_prohibition
+          rs = API.service.jct.sa (issnsets[journal] ? journal), (if institution? then institution else undefined), funder, oa_permissions, retention, sa_prohibition
+        else if which is 'hybrid'
+          rs =  API.service.jct.hybrid (issnsets[journal] ? journal), (if institution? then institution else undefined), funder, oa_permissions
         else
           rs = API.service.jct[which] (issnsets[journal] ? journal), (if institution? and which is 'ta' then institution else undefined)
         if rs
@@ -722,7 +727,14 @@ API.service.jct.retention = (issn, refresh) ->
     return jct_journal.count 'retained:true'
 
 
-API.service.jct.permission = (issn, institution) ->
+API.service.jct.oa_works = (issn, institution) ->
+  issn = issn.split(',') if typeof issn is 'string'
+  permsurl = 'https://api.openaccessbutton.org/permissions?meta=false&issn=' + (if typeof issn is 'string' then issn else issn.join(',')) + (if typeof institution is 'string' then '&ror=' + institution else if institution? and Array.isArray(institution) and institution.length then '&ror=' + institution.join(',') else '')
+  perms = HTTP.call('GET', permsurl, {timeout:3000}).data
+  return perms
+
+
+API.service.jct.permission = (issn, institution, perms) ->
   issn = issn.split(',') if typeof issn is 'string'
   res =
     route: 'self_archiving'
@@ -734,8 +746,6 @@ API.service.jct.permission = (issn, institution) ->
     log: []
 
   try
-    permsurl = 'https://api.openaccessbutton.org/permissions?meta=false&issn=' + (if typeof issn is 'string' then issn else issn.join(',')) + (if typeof institution is 'string' then '&ror=' + institution else if institution? and Array.isArray(institution) and institution.length then '&ror=' + institution.join(',') else '')
-    perms = HTTP.call('GET', permsurl, {timeout:3000}).data
     if perms.best_permission?
       res.compliant = 'no' # set to no until a successful route through is found
       pb = perms.best_permission
@@ -775,8 +785,30 @@ API.service.jct.permission = (issn, institution) ->
   return res
 
 
+API.service.jct.hybrid = (issn, institution, funder, oa_permissions) ->
+  issn = issn.split(',') if typeof issn is 'string'
+  res =
+    route: 'hybrid'
+    compliant: 'unknown'
+    qualifications: undefined
+    issn: issn
+    ror: institution
+    funder: funder
+    log: []
+
+  if oa_permissions.best_permission?.issuer?.journal_oa_type?
+    pb = oa_permissions.best_permission.issuer.journal_oa_type
+    if pb isnt 'hybrid'
+      res.compliant = 'no'
+      res.log.push code: 'Hybrid.NotInOAW'
+    else
+      res.log.push code: 'Hybrid.InOAW'
+
+  return res
+
+
 # Calculate self archiving check. It combines, sa_prohibited, OA.works permission and rr checks
-API.service.jct.sa = (journal, institution, funder, retention=true, sa_prohibition=true) ->
+API.service.jct.sa = (journal, institution, funder, oa_permissions, retention=true, sa_prohibition=true) ->
   # Get SA prohibition
   if journal and sa_prohibition
     res_sa = API.service.jct.sa_prohibited journal, undefined
@@ -784,7 +816,7 @@ API.service.jct.sa = (journal, institution, funder, retention=true, sa_prohibiti
       return res_sa
 
   # Get OA.Works permission
-  rs = API.service.jct.permission journal, institution
+  rs = API.service.jct.permission journal, institution, oa_permissions
 
   # merge the qualifications and logs from SA prohibition into OA.Works permission
   rs.qualifications ?= []
