@@ -803,7 +803,26 @@ API.service.jct.hybrid = (issn, institution, funder, oa_permissions) ->
       res.log.push code: 'Hybrid.NotInOAW'
     else
       res.log.push code: 'Hybrid.InOAW'
-
+      # get list of licences and matching license condition
+      lc = false
+      licences = [] # have to do these now even if can't archive, because needed for new API code algo values
+      for l in pb.licences ? []
+        licences.push l.type
+        # TODO: Need to match with funder config
+        if lc is false and l.type.toLowerCase().replace(/\-/g,'').replace(/ /g,'') in ['ccby','ccbysa','cc0','ccbynd']
+          lc = l.type # set the first but have to keep going for new API codes algo
+      # check if license is compliant
+      if lc
+        res.log.push code: 'Hybrid.Compliant', parameters: licence: licences
+        res.compliant = 'yes'
+      else if not licences or licences.length is 0
+        res.log.push code: 'Hybrid.Unknown', parameters: missing: ['licences']
+        res.compliant = 'unknown'
+      else
+        res.log.push code: 'Hybrid.NonCompliant', parameters: licence: licences
+  else
+    res.log.push code: 'Hybrid.Unknown', parameters: missing: ['journal type']
+    res.compliant = 'unknown'
   return res
 
 
