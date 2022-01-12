@@ -158,22 +158,19 @@ API.add 'service/jct/compliance', get: () -> return jct_compliance.search this.q
 
 API.add 'service/jct/test', get: () -> return API.service.jct.test this.queryParams
 
-API.add 'service/jct/funder_config',
-  get: () ->
-    return jct_funder_config.search this.queryParams
-API.add 'service/jct/funder_config/import',
-  get: () ->
-    Meteor.setTimeout (() => API.service.jct.import_funder_config()), 1
-    return true
+API.add 'service/jct/funder_config', get: () ->
+  return API.service.jct.funder_config undefined, this.queryParams.refresh
+API.add 'service/jct/funder_config/:iid', get: () -> return API.service.jct.funder_config this.urlParams.iid
+API.add 'service/jct/funder_config/import', get: () ->
+  Meteor.setTimeout (() => API.service.jct.funder_config undefined, true), 1
+  return true
 
-API.add 'service/jct/funder_language',
-  get: () ->
-    return jct_funder_language.search this.queryParams
-API.add 'service/jct/funder_language/import',
-  get: () ->
-    Meteor.setTimeout (() => API.service.jct.import_funder_language()), 1
-    return true
-
+API.add 'service/jct/funder_language', get: () ->
+  return API.service.jct.funder_language undefined, this.queryParams.refresh
+API.add 'service/jct/funder_language/:iid', get: () -> return API.service.jct.funder_language this.urlParams.iid
+API.add 'service/jct/funder_language/import', get: () ->
+  Meteor.setTimeout (() => API.service.jct.funder_language undefined, true), 1
+  return true
 
 _jct_clean = (str) ->
   pure = /[!-/:-@[-`{-~¡-©«-¬®-±´¶-¸»¿×÷˂-˅˒-˟˥-˫˭˯-˿͵;΄-΅·϶҂՚-՟։-֊־׀׃׆׳-״؆-؏؛؞-؟٪-٭۔۩۽-۾܀-܍߶-߹।-॥॰৲-৳৺૱୰௳-௺౿ೱ-ೲ൹෴฿๏๚-๛༁-༗༚-༟༴༶༸༺-༽྅྾-࿅࿇-࿌࿎-࿔၊-၏႞-႟჻፠-፨᎐-᎙᙭-᙮᚛-᚜᛫-᛭᜵-᜶។-៖៘-៛᠀-᠊᥀᥄-᥅᧞-᧿᨞-᨟᭚-᭪᭴-᭼᰻-᰿᱾-᱿᾽᾿-῁῍-῏῝-῟῭-`´-῾\u2000-\u206e⁺-⁾₊-₎₠-₵℀-℁℃-℆℈-℉℔№-℘℞-℣℥℧℩℮℺-℻⅀-⅄⅊-⅍⅏←-⏧␀-␦⑀-⑊⒜-ⓩ─-⚝⚠-⚼⛀-⛃✁-✄✆-✉✌-✧✩-❋❍❏-❒❖❘-❞❡-❵➔➘-➯➱-➾⟀-⟊⟌⟐-⭌⭐-⭔⳥-⳪⳹-⳼⳾-⳿⸀-\u2e7e⺀-⺙⺛-⻳⼀-⿕⿰-⿻\u3000-〿゛-゜゠・㆐-㆑㆖-㆟㇀-㇣㈀-㈞㈪-㉃㉐㉠-㉿㊊-㊰㋀-㋾㌀-㏿䷀-䷿꒐-꓆꘍-꘏꙳꙾꜀-꜖꜠-꜡꞉-꞊꠨-꠫꡴-꡷꣎-꣏꤮-꤯꥟꩜-꩟﬩﴾-﴿﷼-﷽︐-︙︰-﹒﹔-﹦﹨-﹫！-／：-＠［-｀｛-･￠-￦￨-￮￼-�]|\ud800[\udd00-\udd02\udd37-\udd3f\udd79-\udd89\udd90-\udd9b\uddd0-\uddfc\udf9f\udfd0]|\ud802[\udd1f\udd3f\ude50-\ude58]|\ud809[\udc00-\udc7e]|\ud834[\udc00-\udcf5\udd00-\udd26\udd29-\udd64\udd6a-\udd6c\udd83-\udd84\udd8c-\udda9\uddae-\udddd\ude00-\ude41\ude45\udf00-\udf56]|\ud835[\udec1\udedb\udefb\udf15\udf35\udf4f\udf6f\udf89\udfa9\udfc3]|\ud83c[\udc00-\udc2b\udc30-\udc93]/g;
@@ -290,6 +287,8 @@ API.service.jct.suggest.journal = (str, from, size) ->
 API.service.jct.calculate = (params={}, refresh, checks=['sa', 'doaj', 'ta', 'tj', 'hybrid'], retention=true, sa_prohibition=true) ->
   # given funder(s), journal(s), institution(s), find out if compliant or not
   # note could be given lists of each - if so, calculate all and return a list
+
+  # Get parameters
   if params.issn
     params.journal = params.issn
     delete params.issn
@@ -301,6 +300,7 @@ API.service.jct.calculate = (params={}, refresh, checks=['sa', 'doaj', 'ta', 'tj
     checks = if typeof params.checks is 'string' then params.checks.split(',') else params.checks
   retention = params.retention if params.retention?
 
+  # initialise basic result object
   res =
     request:
       started: Date.now()
@@ -314,11 +314,12 @@ API.service.jct.calculate = (params={}, refresh, checks=['sa', 'doaj', 'ta', 'tj
     compliant: false
     cache: true
     results: []
+    cards: undefined
 
   return res if not params.journal
 
-  issnsets = {}
-  
+  # Get the matching data for the request parameters from suggest
+  issnsets = {} # set of all matching ISSNs for given journal (ISSN)
   for p in ['funder','journal','institution']
     params[p] = params[p].toString() if typeof params[p] is 'number'
     params[p] = params[p].split(',') if typeof params[p] is 'string'
@@ -331,6 +332,7 @@ API.service.jct.calculate = (params={}, refresh, checks=['sa', 'doaj', 'ta', 'tj
           issnsets[v] ?= ad.issn if p is 'journal' and _.isArray(ad.issn) and ad.issn.length
       res.request[p].push({id: v}) if not sg?.data
 
+  # calculate compliance for each combo, for all the routes
   rq = Random.id() # random ID to store with the cached results, to measure number of unique requests that aggregate multiple sets of entities
   checked = 0
   _check = (funder, journal, institution) ->
@@ -340,8 +342,10 @@ API.service.jct.calculate = (params={}, refresh, checks=['sa', 'doaj', 'ta', 'tj
 
     oa_permissions = API.service.jct.oa_works (issnsets[journal] ? journal), (if institution? then institution else undefined)
 
+    # checks to perform
     cr = sa: ('sa' in checks), doaj: ('doaj' in checks), ta: ('ta' in checks), tj: ('tj' in checks), hybrid: ('hybrid' in checks)
 
+    # calculate compliance for the route (which)
     _ck = (which) ->
       allcached = false
       Meteor.setTimeout () ->
@@ -359,14 +363,23 @@ API.service.jct.calculate = (params={}, refresh, checks=['sa', 'doaj', 'ta', 'tj
             _results.push r
         cr[which] = Date.now()
       , 1
+    # calculate compliance for each route in checks
     for c in checks
       _ck(c) if cr[c]
 
+    # wait for all checks to finish
+    # If true, the check is not yet done. Once done, a check will have the current datetime
     while cr.sa is true or cr.doaj is true or cr.ta is true or cr.tj is true
       future = new Future()
       Meteor.setTimeout (() -> future.return()), 100
       future.wait()
+
+    # calculate cards
+    funder_config = API.service.jct.funder_config funder, undefined
+    res.cards = _cards_for_display(funder_config, _results)
     res.compliant = true if hascompliant
+    # res.compliant = true if res.cards and res.cards.length
+
     delete res.cache if not allcached
     # store a new set of results every time without removing old ones, to keep track of incoming request amounts
     jct_compliance.insert journal: journal, funder: funder, institution: institution, retention: retention, rq: rq, checks: checks, compliant: hascompliant, cache: allcached, results: _results
@@ -374,7 +387,8 @@ API.service.jct.calculate = (params={}, refresh, checks=['sa', 'doaj', 'ta', 'tj
 
     checked += 1
 
-  combos = [] # make a list of all possible valid combos of params
+  # make a list of all possible valid combos of params
+  combos = []
   for j in (if params.journal and params.journal.length then params.journal else [undefined])
     cm = journal: j
     for f in (if params.funder and params.funder.length then params.funder else [undefined]) # does funder have any effect? - probably not right now, so the check will treat them the same
@@ -1172,11 +1186,11 @@ API.service.jct.import = (refresh) ->
     console.log 'JCT import TAs complete'
 
     console.log 'Starting Funder db config import'
-    API.service.jct.import_funder_config()
+    API.service.jct.funder_config.import()
     console.log 'JCT import Funder db config complete'
 
     console.log 'Starting Funder db language import'
-    API.service.jct.import_funder_language()
+    API.service.jct.funder_language.import()
     console.log 'JCT import Funder db language complete'
 
     # check the mappings on jct_journal, jct_agreement, any others that get used and changed during import
@@ -1486,11 +1500,25 @@ API.service.jct.test = (params={}) ->
   delete res.fails if not res.fails.length
   return res
 
+# return the funder config for an id. Import the data if refresh is true
+API.service.jct.funder_config = (id, refresh) ->
+  if refresh
+    console.log('Got refresh - importing funder config')
+    Meteor.setTimeout (() => API.service.jct.funder_config.import()), 1
+    return true
+  if id
+    rec = jct_funder_config.find 'id.exact:"' + id.toLowerCase().trim() + '"'
+    if rec
+      return rec
+    return {}
+  else
+    return total: jct_funder_config.count()
+
 
 # For each funder in jct-funderdb repo, get the final funder configuration
 # The funder's specific config file gets merged with the default config file, to create the final config file
 # This is saved in elastic search
-API.service.jct.import_funder_config = () ->
+API.service.jct.funder_config.import = () ->
   funderdb_path = path.join(process.env.PWD, API.settings.funderdb)
   default_config_file = path.join(funderdb_path, 'default', 'config.yml')
   default_config = jsYaml.load(fs.readFileSync(default_config_file, 'utf8'));
@@ -1510,10 +1538,24 @@ API.service.jct.import_funder_config = () ->
     jct_funder_config.insert funders_config
   return
 
+# return the funder language for an id. Import the data if refresh is true
+API.service.jct.funder_language = (id, refresh) ->
+  if refresh
+    console.log('Got refresh - importing funder language files')
+    Meteor.setTimeout (() => API.service.jct.funder_language.import()), 1
+    return true
+  if id
+    rec = jct_funder_language.find 'id.exact:"' + id.toLowerCase().trim() + '"'
+    if rec
+      return rec
+    return {}
+  else
+    return total: jct_funder_language.count()
+
 # For each funder in jct-funderdb repo, get the final funder language file
 # The funder's specific language files get merged with the default language files, to create the final language file
 # This is saved in elastic search
-API.service.jct.import_funder_language = () ->
+API.service.jct.funder_language.import = () ->
   funderdb_path = path.join(process.env.PWD, API.settings.funderdb)
   default_lang_files_path = path.join(funderdb_path, 'default', 'lang')
   default_language = _flatten_yaml_files(default_lang_files_path)
@@ -1572,3 +1614,76 @@ _flatten_yaml_files = (lang_files_path) ->
       menu = sub_file_name.split('.')[0]
       flattened_config[menu] = jsYaml.load(fs.readFileSync(sub_file_path, 'utf8'));
   return flattened_config
+
+_cards_for_display = (funder_config, results) ->
+  _hasQualification = (path) ->
+    parts = path.split(".")
+    if results and results.length
+      for r in results
+        if parts[0] is r.route
+          if r.qualifications? and r.qualifications.length
+            for q in r.qualifications
+              if parts[1] of q # key is in q
+                return true
+    return false
+
+  _matches_qualifications = (qualifications) ->
+    if not qualifications
+      return true
+    if qualifications.must? and qualifications.must.length
+      for m_q in qualifications.must
+        return false if not _hasQualification(m_q)
+    if qualifications.not? and qualifications.not.length
+      for n_q in qualifications.not
+        return false if _hasQualification(n_q)
+    if qualifications.or? and qualifications.or.length
+      for o_q in qualifications.or
+        return true if _hasQualification(oq)
+      return false
+    return true
+
+  _matches_routes = (routes, compliantRoutes) ->
+    if not routes
+      return true
+    if routes.must? and routes.must.length
+      for m_r in routes.must
+        if m_r not in compliantRoutes
+          return false
+    if routes.not? and routes.not.length
+      for n_r in routes.not
+        if n_r in compliantRoutes
+          return false
+    if routes['or']? and routes['or'].length
+      for o_r in routes['or']
+        if o_r in compliantRoutes
+          return true
+      return false
+    return true
+
+  _matches = (cardConfig, compliantRoutes) ->
+    _matches_routes(cardConfig.match_routes, compliantRoutes) &&
+      _matches_qualifications(cardConfig.match_qualifications);
+
+  # compliant routes
+  compliantRoutes = []
+  if results and results.length
+    for r in results
+      if r.compliant is "yes"
+        compliantRoutes.push(r.route)
+  # list the cards to display
+  cards = []
+  if funder_config
+    if funder_config.cards? and funder_config.cards.length
+      for cardConfig in funder_config.cards
+        if _matches(cardConfig, compliantRoutes)
+          cards.push(cardConfig)
+
+  # sort the cards according to the correct order
+  sorted_cards = []
+  if cards and funder_config.card_order? and funder_config.card_order.length
+    for next_card in funder_config.card_order
+      for card in cards
+        if card.id is next_card
+          sorted_cards.push(card)
+
+  return sorted_cards
