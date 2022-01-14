@@ -452,7 +452,7 @@ API.service.jct.ta = (issn, ror) ->
 API.service.jct.ta.import = (mail=true) ->
   bads = []
   records = []
-  res = sheets: 0, ready: 0, processed:0, records: 0, failed: []
+  res = sheets: 0, ready: 0, processed:0, records: 0, failed: [], not_processed:0
   console.log 'Starting ta import'
   batch = []
   bissns = [] # track ones going into the batch
@@ -523,11 +523,19 @@ API.service.jct.ta.import = (mail=true) ->
           res.processed += 1
         , 1
       _src src, ov
-  while res.sheets isnt res.processed
+    else
+      src = ''
+      if ov?['Data URL']
+        src = ov['Data URL']
+        if typeof ov['Data URL'] is 'string'
+          src = ov['Data URL'].trim()
+      console.log 'sheet ' + res.sheets + ' with url ' + src + ' was not processed'
+      res.not_processed += 1
+  while res.sheets isnt (res.processed + res.not_processed)
     future = new Future()
     Meteor.setTimeout (() -> future.return()), 5000 # wait 5s repeatedly until all sheets are done
     future.wait()
-    console.log 'TA sheets still processing, ' + (res.sheets - res.processed)
+    console.log 'TA sheets still processing, ' + (res.sheets - res.processed - res.not_processed)
   if records.length
     console.log 'Removing and reloading ' + records.length + ' agreements'
     jct_agreement.remove '*'
