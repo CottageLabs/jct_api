@@ -1680,10 +1680,13 @@ _cards_for_display = (funder_config, results) ->
 
   # sort the cards according to the correct order
   sorted_cards = []
-  if cards and funder_config.card_order? and funder_config.card_order.length
-    for next_card in funder_config.card_order
-      for card in cards
-        if card.id is next_card
-          sorted_cards.push(card)
+  if cards
+    if funder_config.card_order? and funder_config.card_order.length
+      for next_card in funder_config.card_order
+        for card in cards
+          if card.id is next_card
+            sorted_cards.push(card)
+    else
+      sorted_cards = cards
 
   return sorted_cards
