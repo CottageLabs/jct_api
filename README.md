@@ -200,3 +200,11 @@ sudo certbot certonly -d YOURDOMAINNAME.COM
 Now follow the normal Installation instructions above. By default we run dev on 
 port 3002 and production on port 3333, and the nginx configs expect that, but 
 can be customised to your preference.
+
+## Updating the service with funder-db submodule
+
+This will update the branch checked out and pull the latest funder-db submodule, meteor will restart the application for us.
+
+```bash
+git pull && git submodule update --init --recursive
+```
