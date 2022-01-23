@@ -747,6 +747,7 @@ API.service.jct.permission = (issn, institution) ->
         licences: [],
         versions: undefined,
         embargo: undefined,
+        planS: undefined,
         score: undefined,
         compliant: 'no'
       # licences - get all license types
@@ -761,6 +762,9 @@ API.service.jct.permission = (issn, institution) ->
         if typeof permission.embargo_months is 'string'
           try permission.embargo_months = parseInt permission.embargo_months
         values.embargo = [permission.embargo_months]
+      # planS compliant funder
+      if permission.requirements?.funder? and permission.requirements.funder.length and 'Plan S' in permission.requirements.funder
+        values.planS = true
       # score
       if permission.score?
         values.score = permission.score
@@ -785,7 +789,7 @@ API.service.jct.permission = (issn, institution) ->
       # version - check for acceptable version
       checks.version = if 'postprint' in permission.versions or 'publisher pdf' in permission.versions or 'acceptedVersion' in permission.versions or 'publishedVersion' in permission.versions then true else false
       # requirements - check if there is no requirement or requirement matches Plan S
-      if permission.requirements? and permission.requirements.length
+      if permission.requirements?
         if permission.requirements.funder? and permission.requirements.funder.length and 'Plan S' in permission.requirements.funder
           checks.requirements = true
           checks.planS = true
@@ -796,7 +800,12 @@ API.service.jct.permission = (issn, institution) ->
         checks.requirements = true
         checks.planS = false
       # check if embargo is 0 (if integer value)
-      if permission.embargo_months? and (typeof permission.embargo_months isnt 'number' or permission.embargo_months is 0)
+      if permission.embargo_months?
+        if typeof permission.embargo_months isnt 'number' or permission.embargo_months is 0
+          checks.embargo = true
+        else
+          checks.embargo = false
+      else
         checks.embargo = true
       # matched_license - get first matching license
       if permission.licences? and permission.licences.length
