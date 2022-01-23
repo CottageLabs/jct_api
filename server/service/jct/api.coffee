@@ -733,155 +733,155 @@ API.service.jct.permission = (issn, institution) ->
     funder: undefined
     log: []
 
-#  try
-  permsurl = 'https://api.openaccessbutton.org/permissions?meta=false&issn=' + (if typeof issn is 'string' then issn else issn.join(',')) + (if typeof institution is 'string' then '&ror=' + institution else if institution? and Array.isArray(institution) and institution.length then '&ror=' + institution.join(',') else '')
-  perms = HTTP.call('GET', permsurl, {timeout:3000}).data
-  console.log(permsurl)
-  if not perms.all_permissions? or perms.all_permissions.length is 0
-    res.log.push code: 'SA.NotInOAB'
-  else
-    # gather values from permission
-    _gather_values = (permission) =>
-      # initialise values to be gathered
-      values =
-        licences: [],
-        versions: undefined,
-        embargo: undefined,
-        planS: undefined,
-        score: undefined,
-        compliant: 'no'
-      # licences - get all license types
-      if permission.licences? and permission.licences.length
-        for l in permission.licences ? []
-          values.licences.push l.type
-      # versions
-      if permission.versions? and permission.versions.length
-        values.versions = permission.versions
-      # embargo
-      if permission.embargo_months?
-        if typeof permission.embargo_months is 'string'
-          try permission.embargo_months = parseInt permission.embargo_months
-        values.embargo = [permission.embargo_months]
-      # planS compliant funder
-      if permission.requirements?.funder? and permission.requirements.funder.length and 'Plan S' in permission.requirements.funder
-        values.planS = true
-      # score
-      if permission.score?
-        values.score = permission.score
-        if typeof values.score is 'string'
-          try values.score = parseInt values.score
-      return values
-
-    # gather outcome of individual checks for permission
-    _gather_checks = (permission) =>
-      checks =
-        archive: undefined,
-        version: undefined,
-        requirements: undefined,
-        planS: undefined,
-        embargo: undefined,
-        matched_license: undefined,
-        license: undefined
-
-      # Perform each of the checks
-      # archive - check if permission allows archiving
-      checks.archive = if permission.can_archive then true else false
-      # version - check for acceptable version
-      checks.version = if 'postprint' in permission.versions or 'publisher pdf' in permission.versions or 'acceptedVersion' in permission.versions or 'publishedVersion' in permission.versions then true else false
-      # requirements - check if there is no requirement or requirement matches Plan S
-      if permission.requirements?
-        if permission.requirements.funder? and permission.requirements.funder.length and 'Plan S' in permission.requirements.funder
-          checks.requirements = true
-          checks.planS = true
-        else
-          checks.requirements = false
-          checks.planS = false
-      else
-        checks.requirements = true
-        checks.planS = false
-      # check if embargo is 0 (if integer value)
-      if permission.embargo_months?
-        if typeof permission.embargo_months isnt 'number' or permission.embargo_months is 0
-          checks.embargo = true
-        else
-          checks.embargo = false
-      else
-        checks.embargo = true
-      # matched_license - get first matching license
-      if permission.licences? and permission.licences.length
-        for l in permission.licences ? []
-          if checks.matched_license is undefined and l.type.toLowerCase().replace(/\-/g,'').replace(/ /g,'') in ['ccby','ccbysa','cc0','ccbynd']
-            checks.matched_license = l.type
-      # license - check for matching license or missing license
-      if checks.matched_license or not permission.licences? or permission.licences.length is 0
-        checks.license = true
-      return checks
-
-    # get best permission based on score
-    _best_permission = (list_of_values) =>
-      if not list_of_values or list_of_values.length is 0
-        return undefined
-      best_score = 0
-      selected_value = undefined
-      for value in list_of_values
-        if value.score? and typeof value.score is 'number' and value.score > best_score
-          best_score = value.score
-          selected_value = value
-      if not selected_value
-        selected_value = list_of_values[0]
-      return selected_value
-
-    # evaluate each permission from OA works
-    oa_check =
-      OABCompliant: [],
-      OABIncomplete: [],
-      OABNonCompliant: []
-    for permission in perms.all_permissions
-      p_values = _gather_values(permission)
-      p_checks = _gather_checks(permission)
-      if p_checks.archive and \
-        p_checks.requirements and \
-        p_checks.version and \
-        p_checks.embargo and \
-        p_checks.license
-        if p_checks.matched_license
-          p_values.compliant = 'yes'
-          oa_check.OABCompliant.push(p_values)
-        else
-          p_values.compliant = 'unknown'
-          p_values.missing = ['licences']
-          oa_check.OABIncomplete.push(p_values)
-      else
-        oa_check.OABNonCompliant.push(p_values)
-
-    # return best result
-    pb = undefined
-    #          licences: [],
-    #          versions: undefined,
-    #          embargo: undefined,
-    #          score: undefined,
-    #          compliant: 'no'
-    if oa_check.OABCompliant.length
-      pb = _best_permission(oa_check.OABCompliant)
-      res.compliant = pb.compliant
-      res.log.push code: 'SA.OABCompliant', parameters: licence: pb.licences, embargo: pb.embargo, version: pb.versions
-      # ToDo - if planS in check, do we need to add a qualification?
-    else if oa_check.OABIncomplete.length
-      pb = _best_permission(oa_check.OABIncomplete)
-      res.compliant = pb.compliant
-      res.log.push code: 'SA.OABIncomplete', parameters: missing: pb.missing
-    else if oa_check.OABNonCompliant.length
-      pb = _best_permission(oa_check.OABNonCompliant)
-      res.compliant = pb.compliant
-      res.log.push code: 'SA.OABNonCompliant', parameters: licence: pb.licences, embargo: pb.embargo, version: pb.versions
+  try
+    permsurl = 'https://api.openaccessbutton.org/permissions?meta=false&issn=' + (if typeof issn is 'string' then issn else issn.join(',')) + (if typeof institution is 'string' then '&ror=' + institution else if institution? and Array.isArray(institution) and institution.length then '&ror=' + institution.join(',') else '')
+    perms = HTTP.call('GET', permsurl, {timeout:3000}).data
+    console.log(permsurl)
+    if not perms.all_permissions? or perms.all_permissions.length is 0
+      res.log.push code: 'SA.NotInOAB'
     else
-      res.compliant = 'unknown'
-      res.log.push code: 'SA.OABIncomplete', parameters: missing: ['licences']
-#  catch
-#    # Fixme: if we don't get an answer then we don't have the info, but this may not be strictly what we want.
-#    res.log.push code: 'SA.OABIncomplete', parameters: missing: ['licences']
-#    res.compliant = 'unknown'
-#    console.log('OAB permission check crashed')
+      # gather values from permission
+      _gather_values = (permission) =>
+        # initialise values to be gathered
+        values =
+          licences: [],
+          versions: undefined,
+          embargo: undefined,
+          planS: undefined,
+          score: undefined,
+          compliant: 'no'
+        # licences - get all license types
+        if permission.licences? and permission.licences.length
+          for l in permission.licences ? []
+            values.licences.push l.type
+        # versions
+        if permission.versions? and permission.versions.length
+          values.versions = permission.versions
+        # embargo
+        if permission.embargo_months?
+          if typeof permission.embargo_months is 'string'
+            try permission.embargo_months = parseInt permission.embargo_months
+          values.embargo = [permission.embargo_months]
+        # planS compliant funder
+        if permission.requirements?.funder? and permission.requirements.funder.length and 'Plan S' in permission.requirements.funder
+          values.planS = true
+        # score
+        if permission.score?
+          values.score = permission.score
+          if typeof values.score is 'string'
+            try values.score = parseInt values.score
+        return values
+
+      # gather outcome of individual checks for permission
+      _gather_checks = (permission) =>
+        checks =
+          archive: undefined,
+          version: undefined,
+          requirements: undefined,
+          planS: undefined,
+          embargo: undefined,
+          matched_license: undefined,
+          license: undefined
+
+        # Perform each of the checks
+        # archive - check if permission allows archiving
+        checks.archive = if permission.can_archive then true else false
+        # version - check for acceptable version
+        checks.version = if 'postprint' in permission.versions or 'publisher pdf' in permission.versions or 'acceptedVersion' in permission.versions or 'publishedVersion' in permission.versions then true else false
+        # requirements - check if there is no requirement or requirement matches Plan S
+        if permission.requirements?
+          if permission.requirements.funder? and permission.requirements.funder.length and 'Plan S' in permission.requirements.funder
+            checks.requirements = true
+            checks.planS = true
+          else
+            checks.requirements = false
+            checks.planS = false
+        else
+          checks.requirements = true
+          checks.planS = false
+        # check if embargo is 0 (if integer value)
+        if permission.embargo_months?
+          if typeof permission.embargo_months isnt 'number' or permission.embargo_months is 0
+            checks.embargo = true
+          else
+            checks.embargo = false
+        else
+          checks.embargo = true
+        # matched_license - get first matching license
+        if permission.licences? and permission.licences.length
+          for l in permission.licences ? []
+            if checks.matched_license is undefined and l.type.toLowerCase().replace(/\-/g,'').replace(/ /g,'') in ['ccby','ccbysa','cc0','ccbynd']
+              checks.matched_license = l.type
+        # license - check for matching license or missing license
+        if checks.matched_license or not permission.licences? or permission.licences.length is 0
+          checks.license = true
+        return checks
+
+      # get best permission based on score
+      _best_permission = (list_of_values) =>
+        if not list_of_values or list_of_values.length is 0
+          return undefined
+        best_score = 0
+        selected_value = undefined
+        for value in list_of_values
+          if value.score? and typeof value.score is 'number' and value.score > best_score
+            best_score = value.score
+            selected_value = value
+        if not selected_value
+          selected_value = list_of_values[0]
+        return selected_value
+
+      # evaluate each permission from OA works
+      oa_check =
+        OABCompliant: [],
+        OABIncomplete: [],
+        OABNonCompliant: []
+      for permission in perms.all_permissions
+        p_values = _gather_values(permission)
+        p_checks = _gather_checks(permission)
+        if p_checks.archive and \
+          p_checks.requirements and \
+          p_checks.version and \
+          p_checks.embargo and \
+          p_checks.license
+          if p_checks.matched_license
+            p_values.compliant = 'yes'
+            oa_check.OABCompliant.push(p_values)
+          else
+            p_values.compliant = 'unknown'
+            p_values.missing = ['licences']
+            oa_check.OABIncomplete.push(p_values)
+        else
+          oa_check.OABNonCompliant.push(p_values)
+
+      # return best result
+      pb = undefined
+      #          licences: [],
+      #          versions: undefined,
+      #          embargo: undefined,
+      #          score: undefined,
+      #          compliant: 'no'
+      if oa_check.OABCompliant.length
+        pb = _best_permission(oa_check.OABCompliant)
+        res.compliant = pb.compliant
+        res.log.push code: 'SA.OABCompliant', parameters: licence: pb.licences, embargo: pb.embargo, version: pb.versions
+        # ToDo - if planS in pb, do we need to add a qualification?
+      else if oa_check.OABIncomplete.length
+        pb = _best_permission(oa_check.OABIncomplete)
+        res.compliant = pb.compliant
+        res.log.push code: 'SA.OABIncomplete', parameters: missing: pb.missing
+      else if oa_check.OABNonCompliant.length
+        pb = _best_permission(oa_check.OABNonCompliant)
+        res.compliant = pb.compliant
+        res.log.push code: 'SA.OABNonCompliant', parameters: licence: pb.licences, embargo: pb.embargo, version: pb.versions
+      else
+        res.compliant = 'unknown'
+        res.log.push code: 'SA.OABIncomplete', parameters: missing: ['licences']
+  catch
+    # Fixme: if we don't get an answer then we don't have the info, but this may not be strictly what we want.
+    res.log.push code: 'SA.OABIncomplete', parameters: missing: ['licences']
+    res.compliant = 'unknown'
+    console.log('OAB permission check crashed')
   return res
 
 
