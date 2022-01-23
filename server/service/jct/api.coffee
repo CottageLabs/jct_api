@@ -736,7 +736,6 @@ API.service.jct.permission = (issn, institution) ->
   try
     permsurl = 'https://api.openaccessbutton.org/permissions?meta=false&issn=' + (if typeof issn is 'string' then issn else issn.join(',')) + (if typeof institution is 'string' then '&ror=' + institution else if institution? and Array.isArray(institution) and institution.length then '&ror=' + institution.join(',') else '')
     perms = HTTP.call('GET', permsurl, {timeout:3000}).data
-    console.log(permsurl)
     if not perms.all_permissions? or perms.all_permissions.length is 0
       res.log.push code: 'SA.NotInOAB'
     else
@@ -856,11 +855,6 @@ API.service.jct.permission = (issn, institution) ->
 
       # return best result
       pb = undefined
-      #          licences: [],
-      #          versions: undefined,
-      #          embargo: undefined,
-      #          score: undefined,
-      #          compliant: 'no'
       if oa_check.OABCompliant.length
         pb = _best_permission(oa_check.OABCompliant)
         res.compliant = pb.compliant
@@ -881,7 +875,6 @@ API.service.jct.permission = (issn, institution) ->
     # Fixme: if we don't get an answer then we don't have the info, but this may not be strictly what we want.
     res.log.push code: 'SA.OABIncomplete', parameters: missing: ['licences']
     res.compliant = 'unknown'
-    console.log('OAB permission check crashed')
   return res
 
 
