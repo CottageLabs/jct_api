@@ -360,8 +360,8 @@ API.service.jct.calculate = (params={}, refresh, checks=['sa', 'doaj', 'ta', 'tj
         cm.institution = i
         combos.push cm
 
-  console.log 'Calculating for:'
-  console.log combos
+#  console.log 'Calculating for:'
+#  console.log combos
 
   # start an async check for every combo
   _prl = (combo) -> Meteor.setTimeout (() -> _check combo.funder, combo.journal, combo.institution), 1
@@ -1165,7 +1165,8 @@ API.service.jct.unknown = (res, funder, journal, institution, send) ->
         q = '*'
       last = false
       for un in jct_unknown.fetch q, {newest: false}
-        start = un.createdAt if start is false
+        if start is false
+          start = un.createdAt
         end = un.createdAt
         last = un
         cnt += 1
@@ -1277,143 +1278,259 @@ API.service.jct.mail = (opts) ->
   return true
 
 
-
 API.service.jct.test = (params={}) ->
-  # A series of queries based on journals, with existing knowledge of their policies. 
-  # To test TJ and Rights retention elements of the algorithm some made up information is included, 
-  # this is marked with [1]. Not all queries test all the compliance routes (in particular rights retention).
-  # Expected JCT Outcome, is what the outcome should be based on reading the information within journal, institution and funder data. 
-  # Actual JCT Outcome is what was obtained by walking through the algorithm under the assumption that 
+  # This automates the tests and the outcomes defined in the JCT Integration Tests spreadsheet (sheet JCT)
+  # Expected JCT Outcome, is what the outcome should be based on reading the information within journal, institution and funder data.
+  # Actual JCT Outcome is what was obtained by walking through the algorithm under the assumption that
   # the publicly available information is within the JCT data sources.
-  params.refresh = true
-  params.sa_prohibition = true if not params.sa_prohibition?
-  params.test = params.tests if params.tests?
-  params.test = params.test.toString() if typeof params.test is 'number'
-  if typeof params.test is 'string'
-    ns = 1: 'one', 2: 'two', 3: 'three', 4: 'four', 5: 'five', 6: 'six', 7: 'seven', 8: 'eight', 9: 'nine', 10: 'ten'
-    for n in ['10','1','2','3','4','5','6','7','8','9']
-      params.test = params.test.replace n, ns[n]
-    params.test = params.test.split ','
-  
-  res = pass: true, fails: [], results: []
 
-  queries =
-    one: # Query 1
-      journal: 'Aging Cell' # (published by Wiley, fully OA, in DOAJ, CC BY, included within UK Jisc TA)
-      institution: 'Cardiff University' # (subscriber to Jisc TA) 03kk7td41
-      funder: 'Wellcome'
-      'expected outcome': 'Researcher can publish via gold open access route or via TA'
-      qualification: 'Researcher must be corresponding author to be eligible for TA'
-      'actual outcome': 'As expected'
-      test: (r) -> return r.compliant and JSON.stringify(r.results).indexOf('corresponding_authors') isnt -1
-    two: # Query 2
-      journal: 'Aging Cell' # (published by Wiley, fully OA, in DOAJ, CC BY, included within UK Jisc TA)
-      institution: 'Emory University' # (no TA or Wiley agreement) 03czfpz43
-      funder: 'Wellcome'
-      'expected outcome': 'Researcher can publish via gold open access route'
-      'actual outcome': 'As expected'
-      test: (r) -> return r.compliant and JSON.stringify(r.results).split('"fully_oa"')[1].split('"issn"')[0].indexOf('"yes"') isnt -1
-    three: # Query 3
-      journal: 'Aging Cell' # (published by Wiley, fully OA, in DOAJ, CC BY, included within UK Jisc & VSNU TAs)
-      institution: ['Emory University', 'Cardiff University', 'Utrecht University'] # 03czfpz43,03kk7td41,04pp8hn57 (Emory has no TA or Wiley account, Cardiff is subscriber to Jisc TA, Utrecht is subscriber to VSNU TA  which expires prior to 1 Jan 2021)
-      funder: ['Wellcome', 'NWO']
-      'expected outcome': 'For Cardiff: Researcher can publish via gold open access route or via TA (Qualification: Researcher must be corresponding author to be eligible for TA). For Emory and Utrecht: Researcher can publish via gold open access route'
-      'actual outcome': 'As expected'
-      test: (r) -> 
-        if r.compliant
-          rs = JSON.stringify r.results
-          if rs.indexOf('TA.Exists') isnt -1
-            return rs.split('"fully_oa"')[1].split('"issn"')[0].indexOf('"yes"') isnt -1
-        return false
-    four: # Query 4
-      journal: 'Proceedings of the Royal Society B' # (subscription journal published by Royal Society, AAM can be shared CC BY no embargo, UK Jisc Read Publish Deal)
-      institution: 'Rothamsted Research' # (subscribe to Read Publish Deal) 0347fy350
-      funder: 'European Commission' # EC
-      'expected outcome': 'Researcher can self-archive or publish via Read Publish Deal'
-      qualification: 'Research must be corresponding author to be eligible for Read Publish Deal'
-      'actual outcome': 'As expected'
-      test: (r) -> 
-        if r.compliant
-          rs = JSON.stringify r.results
-          return rs.indexOf('corresponding_authors') isnt -1 and rs.indexOf('TA.Exists') isnt -1
-        return false
-    five: # Query 5
-      journal: 'Proceedings of the Royal Society B' # (subscription journal published by Royal Society, AAM can be shared CC BY no embargo, UK Jisc Read Publish Deal)
-      institution: 'University of Cape Town' # 03p74gp79
-      funder: 'Bill & Melinda Gates Foundation' # Bill & Melinda Gates Foundation billmelindagatesfoundation
-      'expected outcome': 'Researcher can self-archive'
-      'actual outcome': 'As expected'
-      test: (r) -> 
-        if r.compliant
-          for rs in r.results
-            if rs.route is 'self_archiving' and rs.compliant is 'yes'
-              return true
-        return false
-    six: # Query 6
-      journal: '1477-9129' # Development (published by Company of Biologists, not the other one, hence done by ISSN) # (Transformative Journal, AAM 12 month embargo) 0951-1991
-      institution: 'University of Cape Town' # 03p74gp79
-      funder: 'SAMRC'
-      'expected outcome': 'Researcher can publish via payment of APC (Transformative Journal)'
-      'actual outcome': 'As expected'
-      test: (r) -> return r.compliant and JSON.stringify(r.results).indexOf('TJ.Exists') isnt -1
-    seven: # Query 7
-      journal: 'Brill Research Perspectives in Law and Religion' # (Subscription Journal, VSNU Read Publish Agreement, AAM can be shared CC BY-NC no embargo)
-      institution: 'University of Amsterdam' # 04dkp9463
-      funder: 'NWO'
-      'expected outcome': 'Research can publish via the Transformative Agreement'
-      qualification: 'Researcher must be corresponding author to take advantage of the TA.'
-      'actual outcome': 'As expected'
-      test: (r) ->
-        if r.compliant
-          rs = JSON.stringify r.results
-          return rs.indexOf('corresponding_authors') isnt -1 and rs.indexOf('TA.Exists') isnt -1
-        return false
-    eight: # Query 8
-      journal: 'Migration and Society' # (Subscribe to Open, CC BY, CC BY-ND and CC BY-NC-ND licences available but currently only CC BY-NC-ND in DOAJ)
-      institution: 'University of Vienna' # 03prydq77
-      funder: 'FWF'
-      'expected outcome': 'No routes to compliance'
-      'actual outcome': 'As expected' # this is not possible because everything is currently compliant due to rights retention
-      #test: (r) -> return not r.compliant
-      test: (r) -> return r.compliant and JSON.stringify(r.results).indexOf('SA.Compliant') isnt -1
-    nine: # Query 9 
-      journal: 'Folia Historica Cracoviensia' # (fully oa, in DOAJ, CC BY-NC-ND)
-      institution: ['University of Warsaw', 'University of Ljubljana'] # 039bjqg32,05njb9z20
-      funder: ['NCN']
-      'expected outcome': 'No route to compliance.' # this is impossible due to rights retention
-      'actual outcome': 'As expected'
-      #test: (r) -> return not r.compliant
-      test: (r) -> return r.compliant and JSON.stringify(r.results).indexOf('SA.Compliant') isnt -1
-    ten: # Query 10
-      journal: 'Journal of Clinical Investigation' # (subscription for front end material, research articles: publication fee, no embargo, CC BY licence where required by funders, not in DOAJ, Option 5 Rights Retention Policy [1])
-      institution: 'University of Vienna' # 03prydq77
-      funder: 'FWF'
-      'expected outcome': 'Researcher can publish via standard publication route'
-      'actual outcome': 'Researcher cannot publish in this journal and comply with funders OA policy' # as there is no rights retention this is impossible so it does succeed
-      #test: (r) -> return not r.compliant
-      test: (r) -> return r.compliant and JSON.stringify(r.results).indexOf('SA.Compliant') isnt -1
+  _get_val = (cell, type = false) ->
+    val = undefined
+    try
+      if typeof cell is 'string'
+        val = cell.trim()
+      if type is 'array'
+        if ',' in val
+          values = val.split(',')
+          for v, index in values
+            values[index] = v.trim()
+          val = values
+        if not Array.isArray(val)
+          val = [val]
+      if type in ['number', 'number_to_boolean']
+        val = parseInt val
+        if type is 'number_to_boolean'
+          if val > 0
+            val = true
+          else
+            val = false
+    catch
+      val = undefined
+    return val
 
-  for q of queries
-    if not params.test? or q in params.test
-      qr = queries[q]
-      ans = query: q
-      ans.pass = false
-      ans.inputs = queries[q]
-      ans.discovered = issn: [], funder: [], ror: []
-      for k in ['journal','institution','funder']
-        for j in (if typeof qr[k] is 'string' then [qr[k]] else qr[k])
-          try
-            ans.discovered[if k is 'journal' then 'issn' else if k is 'institution' then 'ror' else 'funder'].push API.service.jct.suggest[k](j).data[0].id
-          catch
-            console.log k, j
-      ans.result = API.service.jct.calculate {funder: ans.discovered.funder, issn: ans.discovered.issn, ror: ans.discovered.ror}, params.refresh, params.checks, params.retention, params.sa_prohibition
-      ans.pass = queries[q].test ans.result
-      if ans.pass isnt true
-        res.pass = false
-        res.fails.push q
-      res.results.push ans
-  
-  delete res.fails if not res.fails.length
-  return res
+  _get_query_params = (test) ->
+    query =
+      issn: _get_val(test['ISSN'])
+      funder: _get_val(test['Funder ID'])
+      ror: _get_val(test['ROR'])
+    return query
+
+  _initialise_result = (test) ->
+    res =
+      id: _get_val(test['Test ID'], 'number')
+      journal:
+        issn: _get_val(test['ISSN'])
+        expected: _get_val(test['Journal Name'])
+        got: undefined
+        outcome: undefined
+      funder:
+        id: _get_val(test['Funder ID'])
+        expected: _get_val(test['Funder Name'])
+        got: undefined
+        outcome: undefined
+      institution:
+        ror: _get_val(test['ROR'])
+        expected: _get_val(test['Institution'])
+        got: undefined
+        outcome: undefined
+      route:
+        fully_oa:
+          expected: _get_val(test['Fully OA'], 'number_to_boolean')
+          got: undefined
+          outcome: undefined
+          log_codes:
+            expected: _get_val(test['Fully OA log codes'], 'array')
+            got: undefined
+            outcome: undefined
+        ta:
+          expected: _get_val(test['TA'], 'number_to_boolean')
+          got: undefined
+          outcome: undefined
+          log_codes:
+            expected: _get_val(test['TA log codes'], 'array')
+            got: undefined
+            outcome: undefined
+        tj:
+          expected: _get_val(test['TJ'], 'number_to_boolean')
+          got: undefined
+          outcome: undefined
+          log_codes:
+            expected: _get_val(test['TJ log codes'], 'array')
+            got: undefined
+            outcome: undefined
+        self_archiving:
+          expected: _get_val(test['SA'], 'number_to_boolean')
+          got: undefined
+          outcome: undefined
+          log_codes:
+            expected: _get_val(test['SA log codes'], 'array')
+            got: undefined
+            outcome: undefined
+      result:
+        outcome: true
+        pass: 0
+        fail: 0
+        warning: 0
+        total: 0
+        message: []
+    #        hybrid:
+    #          expected: _get_val(test['Hybrid'], true)
+    #          got: undefined
+    #          outcome: undefined
+    #          log_codes:
+    #            expected: _get_val(test['Hybrid log codes'])
+    #            got: undefined
+    #            outcome: undefined
+    return res
+
+  _initialise_final_result = () ->
+    result =
+      outcome: true
+      pass: 0
+      fail: 0
+      warning: 0
+      total: 0
+      message: []
+      test_result: []
+    return result
+
+  _test_equal = (expected, got) ->
+    if typeof expected is 'string'
+      if not typeof got is 'string'
+        got = got.toString()
+      return expected.toLowerCase() == got.toLowerCase()
+    else if typeof expected is 'boolean'
+      if typeof got isnt 'boolean'
+        return false
+      return got is expected
+    else
+      if not _.isArray(expected) then [expected] else expected
+      if not _.isArray(got) then [got] else got
+      if got.length is expected.length and expected.every (elem) -> elem in got
+        return true
+    return false
+
+  _match_query = (param, output, res) ->
+    if res[param].expected isnt undefined
+      res[param].outcome = false
+      if output.request[param] and output.request[param].length and output.request[param][0].title?
+        res[param].got =  _get_val(output.request[param][0].title)
+        res[param].outcome = _test_equal(res[param].expected, res[param].got)
+    return
+
+  _test_compliance = (route_name, output_result, res) ->
+    # get compliance
+    if output_result.compliant?
+      ans = false
+      if output_result.compliant is "yes"
+        ans = true
+      res.route[route_name].got = ans
+    if res.route[route_name].expected isnt undefined
+      res.route[route_name].outcome = _test_equal(res.route[route_name].expected, res.route[route_name].got)
+    return
+
+  _test_log_codes = (route_name, output_result, res) ->
+    # get log codes
+    expected = res.route[route_name].log_codes.expected
+    if expected isnt undefined
+      got = []
+      if output_result.log? and output_result.log.length
+        for log in output_result.log
+          if log.code? and log.code
+            got.push(log.code)
+      res.route[route_name].log_codes.got = got
+      res.route[route_name].log_codes.outcome = _test_equal(expected, got)
+    return
+
+  _test_route = (output, res) ->
+    if output.results? and output.results.length
+      for output_result in output.results
+        route_name = output_result.route
+        if res.route[route_name]?
+          _test_compliance(route_name, output_result, res)
+          _test_log_codes(route_name, output_result, res)
+    return
+
+  _add_message = (type, id, name, got, expected) ->
+    message = type + ': ' + id + ' - ' + name + ' - ' + 'Got: ' + JSON.stringify(got) + ' Expected: ' + JSON.stringify(expected)
+    return message
+
+  _add_query_outcome = (param, res) ->
+    if res[param].outcome isnt true
+      res.result.message.push(_add_message('Warning', res.id, 'Query param ' + param, res[param].got, res[param].expected))
+
+  _add_compliance_outcome = (param, res) ->
+    res.result.total += 1
+    if typeof res.route[param].outcome is 'boolean'
+      res.result.outcome = res.result.outcome and res.route[param].outcome
+    if res.route[param].outcome is undefined
+      res.result.warning += 1
+      res.result.message.push(_add_message('Warning', res.id, param + ' comnpliance', res.route[param].got, res.route[param].expected))
+    else if res.route[param].outcome is true
+      res.result.pass += 1
+      # res.result.message.push(_add_message('Debug', res.id, param + ' comnpliance', res.route[param].got, res.route[param].expected))
+    else
+      res.result.fail += 1
+      res.result.message.push(_add_message('Error', res.id, param + ' comnpliance', res.route[param].got, res.route[param].expected))
+
+  _add_log_codes_outcome = (param, res) ->
+    res.result.total += 1
+    if typeof res.route[param].log_codes.outcome is 'boolean'
+      res.result.outcome = res.result.outcome and res.route[param].log_codes.outcome
+    if res.route[param].log_codes.outcome is undefined
+      res.result.warning += 1
+      res.result.message.push(_add_message('Warning', res.id, param + ' log codes ', res.route[param].log_codes.got, res.route[param].log_codes.expected))
+    else if res.route[param].log_codes.outcome is true
+      res.result.pass += 1
+      # res.result.message.push(_add_message('Debug', res.id, param + ' log codes ', res.route[param].log_codes.got, res.route[param].log_codes.expected))
+    else
+      res.result.fail += 1
+      res.result.message.push(_add_message('Error', res.id, param + ' log codes ', res.route[param].log_codes.got, res.route[param].log_codes.expected))
+
+  _add_outcome = (res) ->
+    # match query - journal
+    _add_query_outcome('journal', res)
+    _add_query_outcome('funder', res)
+    _add_query_outcome('institution', res)
+    for route_name, route_outcomes of res.route
+      _add_compliance_outcome(route_name, res)
+      _add_log_codes_outcome(route_name, res)
+
+  _add_final_outcome = (res, final_result) ->
+    final_result.total += 1
+    if typeof res.result.outcome is 'boolean'
+      final_result.outcome = final_result.outcome and res.result.outcome
+    if res.result.outcome is undefined
+      final_result.warning += 1
+      final_result.message.concat(res.result.message)
+    else if res.result.outcome is true
+      final_result.pass += 1
+    else if res.result.outcome is false
+      final_result.fail += 1
+      Array::push.apply final_result.message, res.result.message
+    final_result.test_result.push(res)
+
+  # original test sheet
+  # test_sheet= "https://docs.google.com/spreadsheets/d/e/2PACX-1vTjuuobH3m7Bq5ztsKnue5W7ieqqsBYOm5sX17_LSuQjkyNTozvOED5E0hvazWRjIfSW5xvhRSdNLBF/pub?gid=0&single=true&output=csv"
+  # Test sheet with my extensions
+  test_sheet = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRW1YDHv4vu-7BexRKXWVd6HpD8ohXNvibj6vF_HP7H8YsBu6Yy1NcANXjg4E6lI-tIiImR2lhVKF0L/pub?gid=0&single=true&output=csv"
+
+  console.log 'Getting list of tests'
+  tests = API.service.jct.csv2json test_sheet
+  console.log 'Retrieved ' + tests.length + ' tests from sheet'
+
+  final_result = _initialise_final_result()
+  for test in tests
+    query = _get_query_params(test)
+    res = _initialise_result(test)
+    console.log('Doing test ' + res.id)
+    if query.issn and query.funder and query.ror
+      output = API.service.jct.calculate {funder: query.funder, issn: query.issn, ror: query.ror}
+      for match in ['funder', 'journal', 'institution']
+        _match_query(match, output, res)
+      _test_route(output, res)
+      _add_outcome(res)
+    _add_final_outcome(res, final_result)
+  return final_result
 
 
