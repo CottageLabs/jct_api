@@ -23,5 +23,6 @@
       "sa_rr": "add gsheets link to rights retention spreadsheet published as csv",
       "sa_prohibited": "add gsheets link to self archiving - rights retention prohibited spreadsheet published as csv"
     }
-  }
+  },
+  "funderdb": "jct-funderdb/funders"
 }
