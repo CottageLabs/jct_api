@@ -777,7 +777,6 @@ API.service.jct.permission = (issn, institution) ->
           archive: undefined,
           version: undefined,
           requirements: undefined,
-          planS: undefined,
           embargo: undefined,
           matched_license: undefined,
           license: undefined
@@ -791,13 +790,10 @@ API.service.jct.permission = (issn, institution) ->
         if permission.requirements?
           if permission.requirements.funder? and permission.requirements.funder.length and 'Plan S' in permission.requirements.funder
             checks.requirements = true
-            checks.planS = true
           else
             checks.requirements = false
-            checks.planS = false
         else
           checks.requirements = true
-          checks.planS = false
         # check if embargo is 0 (if integer value)
         if permission.embargo_months?
           if typeof permission.embargo_months isnt 'number' or permission.embargo_months is 0
