@@ -452,13 +452,14 @@ API.service.jct.ta = (issn, ror) ->
 API.service.jct.ta.import = (mail=true) ->
   bads = []
   records = []
-  res = sheets: 0, ready: 0, processed:0, records: 0, failed: []
+  res = sheets: 0, ready: 0, processed:0, records: 0, failed: [], not_processed:0
   console.log 'Starting ta import'
   batch = []
   bissns = [] # track ones going into the batch
   for ov in API.service.jct.csv2json 'https://docs.google.com/spreadsheets/d/e/2PACX-1vStezELi7qnKcyE8OiO2OYx2kqQDOnNsDX1JfAsK487n2uB_Dve5iDTwhUFfJ7eFPDhEjkfhXhqVTGw/pub?gid=1130349201&single=true&output=csv'
     res.sheets += 1
-    if typeof ov?['Data URL'] is 'string' and ov['Data URL'].trim().indexOf('http') is 0 and ov?['End Date']? and moment(ov['End Date'].trim(), 'YYYY-MM-DD').valueOf() > Date.now()
+    # Removed check for TA end date. Expired TAs are handled as a part of data management
+    if typeof ov?['Data URL'] is 'string' and ov['Data URL'].trim().indexOf('http') is 0
       res.ready += 1
       src = ov['Data URL'].trim()
       console.log res
@@ -523,11 +524,19 @@ API.service.jct.ta.import = (mail=true) ->
           res.processed += 1
         , 1
       _src src, ov
-  while res.sheets isnt res.processed
+    else
+      src = ''
+      if ov?['Data URL']
+        src = ov['Data URL']
+        if typeof ov['Data URL'] is 'string'
+          src = ov['Data URL'].trim()
+      console.log 'sheet ' + res.sheets + ' with url ' + src + ' was not processed'
+      res.not_processed += 1
+  while res.sheets isnt (res.processed + res.not_processed)
     future = new Future()
     Meteor.setTimeout (() -> future.return()), 5000 # wait 5s repeatedly until all sheets are done
     future.wait()
-    console.log 'TA sheets still processing, ' + (res.sheets - res.processed)
+    console.log 'TA sheets still processing, ' + (res.sheets - res.processed - res.not_processed)
   if records.length
     console.log 'Removing and reloading ' + records.length + ' agreements'
     jct_agreement.remove '*'
