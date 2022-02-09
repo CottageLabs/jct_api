@@ -1045,7 +1045,8 @@ API.service.jct.journals.import = (refresh) ->
     total = 0
     counter = 0
     batch = []
-    while total is 0 or counter < total
+    error_count = 0
+    while (total is 0 or counter < total) and error_count < 10
       if batch.length >= 10000 or (removed and batch.length >= 5000)
         if not removed
           # makes a shorter period of lack of records to query
@@ -1088,13 +1089,16 @@ API.service.jct.journals.import = (refresh) ->
             batch.push rec
         counter += 1000
       catch err
+        error_count += 1
         future = new Future()
         Meteor.setTimeout (() -> future.return()), 2000 # wait 2s on probable crossref downtime
         future.wait()
     if batch.length
       jct_journal.insert batch
       batch = []
-    
+    if error_count >= 10
+      console.log 'Crossref import had ' + error_count + ' errors. Backing off. Imported ' + batch.length + ' of ' + total + ' records.'
+
     # then load the DOAJ data from the file (crossref takes priority because it has better metadata for spotting discontinuations)
     # only about 20% of the ~15k are not already in crossref, so do updates then bulk load the new ones
     console.log 'Importing from DOAJ journal dump ' + current
