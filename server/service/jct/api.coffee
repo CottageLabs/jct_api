@@ -51,7 +51,7 @@ funders will be a list given to us by JCT detailing their particular requirement
 # (for convenience the settings have initially been set up to only run import on dev as well, to make the most 
 # of the dev machine and minimise any potential memory or CPU intense work on the live machine - see the settings.json file for this config)
 
-index_name = API.settings.es.sub_index ? 'jct'
+index_name = API.settings.es.index ? 'jct'
 @jct_institution = new API.collection {index:index_name, type:"institution", devislive: true}
 jct_journal = new API.collection {index:index_name, type:"journal"}
 jct_agreement = new API.collection {index:index_name, type:"agreement"}
@@ -59,7 +59,6 @@ jct_compliance = new API.collection {index:index_name, type:"compliance"}
 jct_unknown = new API.collection {index:index_name, type:"unknown"}
 jct_funder_config = new API.collection {index:index_name, type:"funder_config"}
 jct_funder_language = new API.collection {index:index_name, type:"funder_language"}
-
 
 # define endpoints that the JCT requires (to be served at a dedicated domain)
 API.add 'service/jct', get: () -> return 'cOAlition S Journal Checker Tool. Service provided by Cottage Labs LLP. Contact us@cottagelabs.com'
@@ -1170,8 +1169,10 @@ API.service.jct.journals.import = (refresh) ->
   
 
 API.service.jct.import = (refresh) ->
-  res = previously: jct_journal.count(), presently: undefined, started: Date.now()
-  res.newest = jct_agreement.find '*', true
+  res = {}
+  if jct_journal
+    res = previously: jct_journal.count(), presently: undefined, started: Date.now()
+    res.newest = jct_agreement.find '*', true
   if refresh or res.newest?.createdAt < Date.now()-86400000
     # run all imports necessary for up to date data
     console.log 'Starting JCT imports'
