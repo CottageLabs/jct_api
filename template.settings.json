@@ -7,13 +7,15 @@
   },
   "es": {
     "url": "http://localhost:9200",
-    "index": "noddy"
+    "index": "noddy",
+    "sub_index": "jct"
   },
   "service": {
     "jct": {
       "doaj": {
         "apikey": "<add doaj api key here>"
-      }
+      },
+      "import_day": 6
     }
   },
   "data_url": {
@@ -23,5 +25,6 @@
       "sa_rr": "add gsheets link to rights retention spreadsheet published as csv",
       "sa_prohibited": "add gsheets link to self archiving - rights retention prohibited spreadsheet published as csv"
     }
-  }
+  },
+  "funderdb": "jct-funderdb/funders"
 }
