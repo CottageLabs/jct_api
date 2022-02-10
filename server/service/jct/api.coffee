@@ -284,7 +284,7 @@ API.service.jct.suggest.journal = (str, from, size) ->
   return total: res?.hits?.total ? 0, data: _.union starts.sort((a, b) -> return a.title.length - b.title.length), extra.sort((a, b) -> return a.title.length - b.title.length)
 
 
-API.service.jct.calculate = (params={}, refresh, checks=['sa', 'doaj', 'ta', 'tj', 'hybrid'], retention=true, sa_prohibition=true) ->
+API.service.jct.calculate = (params={}, refresh, checks=['sa', 'doaj', 'ta', 'tj', 'hybrid'], check_retention=true, sa_prohibition=true) ->
   # given funder(s), journal(s), institution(s), find out if compliant or not
   # note could be given lists of each - if so, calculate all and return a list
 
@@ -298,7 +298,7 @@ API.service.jct.calculate = (params={}, refresh, checks=['sa', 'doaj', 'ta', 'tj
   refresh ?= params.refresh if params.refresh?
   if params.checks?
     checks = if typeof params.checks is 'string' then params.checks.split(',') else params.checks
-  retention = params.retention if params.retention?
+  check_retention = params.check_retention if params.check_retention?
 
   # initialise basic result object
   res =
@@ -310,7 +310,7 @@ API.service.jct.calculate = (params={}, refresh, checks=['sa', 'doaj', 'ta', 'tj
       funder: []
       institution: []
       checks: checks
-      retention: retention
+      check_retention: check_retention
     compliant: false
     cache: true
     results: []
@@ -350,7 +350,7 @@ API.service.jct.calculate = (params={}, refresh, checks=['sa', 'doaj', 'ta', 'tj
       allcached = false
       Meteor.setTimeout () ->
         if which is 'sa'
-          rs = API.service.jct.sa (issnsets[journal] ? journal), (if institution? then institution else undefined), funder, oa_permissions, retention, sa_prohibition
+          rs = API.service.jct.sa (issnsets[journal] ? journal), (if institution? then institution else undefined), funder, oa_permissions, check_retention, sa_prohibition
         else if which is 'hybrid'
           rs =  API.service.jct.hybrid (issnsets[journal] ? journal), (if institution? then institution else undefined), funder, oa_permissions
         else
@@ -382,7 +382,7 @@ API.service.jct.calculate = (params={}, refresh, checks=['sa', 'doaj', 'ta', 'tj
 
     delete res.cache if not allcached
     # store a new set of results every time without removing old ones, to keep track of incoming request amounts
-    jct_compliance.insert journal: journal, funder: funder, institution: institution, retention: retention, rq: rq, checks: checks, compliant: hascompliant, cache: allcached, results: _results
+    jct_compliance.insert journal: journal, funder: funder, institution: institution, check_retention: check_retention, rq: rq, checks: checks, compliant: hascompliant, cache: allcached, results: _results
     res.results.push(rs) for rs in _results
 
     checked += 1
@@ -676,6 +676,7 @@ API.service.jct.sa_prohibited = (issn, refresh) ->
             if isn not in exists.issn
               upd.issn.push isn
           upd.sa_prohibited = true if exists.sa_prohibited isnt true
+          # All of the sa prohibition data is held in journal.retention
           upd.retention = rt
           if JSON.stringify(upd) isnt '{}'
             for en in exists.issn
@@ -871,7 +872,7 @@ API.service.jct.hybrid = (issn, institution, funder, oa_permissions) ->
 
 
 # Calculate self archiving check. It combines, sa_prohibited, OA.works permission and rr checks
-API.service.jct.sa = (journal, institution, funder, oa_permissions, retention=true, sa_prohibition=true) ->
+API.service.jct.sa = (journal, institution, funder, oa_permissions, check_retention=true, sa_prohibition=true) ->
   # Get SA prohibition
   if journal and sa_prohibition
     res_sa = API.service.jct.sa_prohibited journal, undefined
@@ -895,13 +896,11 @@ API.service.jct.sa = (journal, institution, funder, oa_permissions, retention=tr
   if rs
     _rtn = {}
     for r in (if _.isArray(rs) then rs else [rs])
-      if r.compliant isnt 'yes' and retention
+      if r.compliant isnt 'yes' and check_retention
         # only check retention if the funder allows it - and only if there IS a funder
         # funder allows if their rights retention date
         if journal and funder? and fndr = API.service.jct.funders funder
           r.funder = funder
-          # 1609459200000 = Wed Sep 25 52971
-          # if fndr.retentionAt? and (fndr.retentionAt is 1609459200000 or fndr.retentionAt >= Date.now())
           # if retentionAt is in past - active - https://github.com/antleaf/jct-project/issues/437
           if fndr.retentionAt? and fndr.retentionAt < Date.now()
             r.log.push code: 'SA.FunderRRActive'
