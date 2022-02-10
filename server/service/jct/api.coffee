@@ -69,7 +69,7 @@ API.add 'service/jct/ta',
       ret = []
       for r in (if not _.isArray(res) then [res] else res)
         if r.compliant is 'yes'
-          ret.push issn: r.issn, ror: r.ror, id: log[0].result.split(' - ')[1]
+          ret.push issn: r.issn, ror: r.ror, result: res
       return if ret.length then ret else 404
     else
       return jct_agreement.search this.queryParams
@@ -1315,6 +1315,14 @@ API.service.jct.test = (params={}) ->
       ror: _get_val(test['ROR'])
     return query
 
+  _get_expected_cards = (test) ->
+    expected_cards = []
+    for cell in ['Card 1', 'Card 2', 'Card 3', 'Card 4']
+      val = _get_val(test[cell])
+      if val
+        expected_cards.push(val)
+    return expected_cards
+
   _initialise_result = (test) ->
     res =
       id: _get_val(test['Test ID'], 'number')
@@ -1366,6 +1374,18 @@ API.service.jct.test = (params={}) ->
             expected: _get_val(test['SA log codes'], 'array')
             got: undefined
             outcome: undefined
+        hybrid:
+          expected: _get_val(test['Hybrid'], 'number_to_boolean')
+          got: undefined
+          outcome: undefined
+          log_codes:
+            expected: _get_val(test['Hybrid log codes'])
+            got: undefined
+            outcome: undefined
+      cards:
+        expected: _get_expected_cards(test)
+        got: undefined
+        outcome: undefined
       result:
         outcome: true
         pass: 0
@@ -1373,14 +1393,6 @@ API.service.jct.test = (params={}) ->
         warning: 0
         total: 0
         message: []
-    #        hybrid:
-    #          expected: _get_val(test['Hybrid'], true)
-    #          got: undefined
-    #          outcome: undefined
-    #          log_codes:
-    #            expected: _get_val(test['Hybrid log codes'])
-    #            got: undefined
-    #            outcome: undefined
     return res
 
   _initialise_final_result = () ->
@@ -1432,14 +1444,17 @@ API.service.jct.test = (params={}) ->
   _test_log_codes = (route_name, output_result, res) ->
     # get log codes
     expected = res.route[route_name].log_codes.expected
-    if expected isnt undefined
-      got = []
-      if output_result.log? and output_result.log.length
-        for log in output_result.log
-          if log.code? and log.code
-            got.push(log.code)
-      res.route[route_name].log_codes.got = got
-      res.route[route_name].log_codes.outcome = _test_equal(expected, got)
+    if expected is undefined or not expected
+      expected = []
+    if not Array.isArray(expected)
+      expected = [expected]
+    got = []
+    if output_result.log? and output_result.log.length
+      for log in output_result.log
+        if log.code? and log.code
+          got.push(log.code)
+    res.route[route_name].log_codes.got = got
+    res.route[route_name].log_codes.outcome = _test_equal(expected, got)
     return
 
   _test_route = (output, res) ->
@@ -1449,6 +1464,18 @@ API.service.jct.test = (params={}) ->
         if res.route[route_name]?
           _test_compliance(route_name, output_result, res)
           _test_log_codes(route_name, output_result, res)
+    return
+
+  _test_cards = (output, res) ->
+    # get expected cards
+    expected = res.cards.expected
+    got = []
+    if output.cards? and output.cards.length
+      for card in output.cards
+        if card.id? and card.id
+          got.push(card.id)
+      res.cards.got = got
+    res.cards.outcome = _test_equal(expected, got)
     return
 
   _add_message = (type, id, name, got, expected) ->
@@ -1465,13 +1492,13 @@ API.service.jct.test = (params={}) ->
       res.result.outcome = res.result.outcome and res.route[param].outcome
     if res.route[param].outcome is undefined
       res.result.warning += 1
-      res.result.message.push(_add_message('Warning', res.id, param + ' comnpliance', res.route[param].got, res.route[param].expected))
+      res.result.message.push(_add_message('Warning', res.id, param + ' compliance', res.route[param].got, res.route[param].expected))
     else if res.route[param].outcome is true
       res.result.pass += 1
-      # res.result.message.push(_add_message('Debug', res.id, param + ' comnpliance', res.route[param].got, res.route[param].expected))
+      # res.result.message.push(_add_message('Debug', res.id, param + ' compliance', res.route[param].got, res.route[param].expected))
     else
       res.result.fail += 1
-      res.result.message.push(_add_message('Error', res.id, param + ' comnpliance', res.route[param].got, res.route[param].expected))
+      res.result.message.push(_add_message('Error', res.id, param + ' compliance', res.route[param].got, res.route[param].expected))
 
   _add_log_codes_outcome = (param, res) ->
     res.result.total += 1
@@ -1487,6 +1514,20 @@ API.service.jct.test = (params={}) ->
       res.result.fail += 1
       res.result.message.push(_add_message('Error', res.id, param + ' log codes ', res.route[param].log_codes.got, res.route[param].log_codes.expected))
 
+  _add_cards_outcome = (res) ->
+    res.result.total += 1
+    if typeof res.cards.outcome is 'boolean'
+      res.result.outcome = res.result.outcome and res.cards.outcome
+    if res.cards.outcome is undefined
+      res.result.warning += 1
+      res.result.message.push(_add_message('Warning', res.id, 'cards', res.cards.got, res.cards.expected))
+    else if res.cards.outcome is true
+      res.result.pass += 1
+      # res.result.message.push(_add_message('Debug', res.id, 'cards', res.cards.got, res.cards.expected))
+    else
+      res.result.fail += 1
+      res.result.message.push(_add_message('Error', res.id, 'cards', res.cards.got, res.cards.expected))
+
   _add_outcome = (res) ->
     # match query - journal
     _add_query_outcome('journal', res)
@@ -1495,6 +1536,7 @@ API.service.jct.test = (params={}) ->
     for route_name, route_outcomes of res.route
       _add_compliance_outcome(route_name, res)
       _add_log_codes_outcome(route_name, res)
+    _add_cards_outcome(res)
 
   _add_final_outcome = (res, final_result) ->
     final_result.total += 1
@@ -1502,7 +1544,7 @@ API.service.jct.test = (params={}) ->
       final_result.outcome = final_result.outcome and res.result.outcome
     if res.result.outcome is undefined
       final_result.warning += 1
-      final_result.message.concat(res.result.message)
+      Array::push.apply final_result.message, res.result.message
     else if res.result.outcome is true
       final_result.pass += 1
     else if res.result.outcome is false
@@ -1511,9 +1553,9 @@ API.service.jct.test = (params={}) ->
     final_result.test_result.push(res)
 
   # original test sheet
-  # test_sheet= "https://docs.google.com/spreadsheets/d/e/2PACX-1vTjuuobH3m7Bq5ztsKnue5W7ieqqsBYOm5sX17_LSuQjkyNTozvOED5E0hvazWRjIfSW5xvhRSdNLBF/pub?gid=0&single=true&output=csv"
+  test_sheet= "https://docs.google.com/spreadsheets/d/e/2PACX-1vTjuuobH3m7Bq5ztsKnue5W7ieqqsBYOm5sX17_LSuQjkyNTozvOED5E0hvazWRjIfSW5xvhRSdNLBF/pub?gid=0&single=true&output=csv"
   # Test sheet with my extensions
-  test_sheet = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRW1YDHv4vu-7BexRKXWVd6HpD8ohXNvibj6vF_HP7H8YsBu6Yy1NcANXjg4E6lI-tIiImR2lhVKF0L/pub?gid=0&single=true&output=csv"
+  # test_sheet = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRW1YDHv4vu-7BexRKXWVd6HpD8ohXNvibj6vF_HP7H8YsBu6Yy1NcANXjg4E6lI-tIiImR2lhVKF0L/pub?gid=0&single=true&output=csv"
 
   console.log 'Getting list of tests'
   tests = API.service.jct.csv2json test_sheet
@@ -1529,8 +1571,8 @@ API.service.jct.test = (params={}) ->
       for match in ['funder', 'journal', 'institution']
         _match_query(match, output, res)
       _test_route(output, res)
+      _test_cards(output, res)
       _add_outcome(res)
     _add_final_outcome(res, final_result)
   return final_result
-
 
