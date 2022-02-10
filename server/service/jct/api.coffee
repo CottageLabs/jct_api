@@ -284,7 +284,7 @@ API.service.jct.suggest.journal = (str, from, size) ->
   return total: res?.hits?.total ? 0, data: _.union starts.sort((a, b) -> return a.title.length - b.title.length), extra.sort((a, b) -> return a.title.length - b.title.length)
 
 
-API.service.jct.calculate = (params={}, refresh, checks=['sa', 'doaj', 'ta', 'tj', 'hybrid'], check_retention=true, sa_prohibition=true) ->
+API.service.jct.calculate = (params={}, refresh) ->
   # given funder(s), journal(s), institution(s), find out if compliant or not
   # note could be given lists of each - if so, calculate all and return a list
 
@@ -296,9 +296,16 @@ API.service.jct.calculate = (params={}, refresh, checks=['sa', 'doaj', 'ta', 'tj
     params.institution = params.ror
     delete params.ror
   refresh ?= params.refresh if params.refresh?
-  if params.checks?
-    checks = if typeof params.checks is 'string' then params.checks.split(',') else params.checks
-  check_retention = params.check_retention if params.check_retention?
+  # all possible checks we can perform
+  checks = {
+    'self_archiving': 'sa',
+    'fully_oa': 'fully_oa',
+    'ta' : 'ta',
+    'tj': 'tj',
+    'hybrid': 'hybrid'
+  }
+  check_retention = true
+  check_sa_prohibition = true
 
   # initialise basic result object
   res =
@@ -310,7 +317,6 @@ API.service.jct.calculate = (params={}, refresh, checks=['sa', 'doaj', 'ta', 'tj
       funder: []
       institution: []
       checks: checks
-      check_retention: check_retention
     compliant: false
     cache: true
     results: []
@@ -340,45 +346,57 @@ API.service.jct.calculate = (params={}, refresh, checks=['sa', 'doaj', 'ta', 'tj
     allcached = true
     _results = []
 
+    # get data from oa.works
     oa_permissions = API.service.jct.oa_works (issnsets[journal] ? journal), (if institution? then institution else undefined)
+    # get funder config
+    funder_config = API.service.jct.funder_config funder, undefined
 
-    # checks to perform
-    cr = sa: ('sa' in checks), doaj: ('doaj' in checks), ta: ('ta' in checks), tj: ('tj' in checks), hybrid: ('hybrid' in checks)
+    # checks to perform for journal
+    _journal_checks = (funder_config) ->
+      journal_checks = []
+      if funder_config.routes? and funder_config.routes
+        for route in funder_config.routes
+          if route in checks and route.calculate? and route.calculate is true
+            journal_checks.push(route)
+      return journal_checks
+    res.request.checks = _journal_checks(funder_config)
+    cr = {}
+    for route, route_method of checks
+      cr[route_method] = route in res.request.checks
 
     # calculate compliance for the route (which)
-    _ck = (which) ->
+    _ck = (route_method) ->
       allcached = false
       Meteor.setTimeout () ->
-        if which is 'sa'
-          rs = API.service.jct.sa (issnsets[journal] ? journal), (if institution? then institution else undefined), funder, oa_permissions, check_retention, sa_prohibition
-        else if which is 'hybrid'
+        if route_method is 'sa'
+          rs = API.service.jct.sa (issnsets[journal] ? journal), (if institution? then institution else undefined), funder, oa_permissions, check_retention, check_sa_prohibition
+        else if route_method is 'hybrid'
           rs =  API.service.jct.hybrid (issnsets[journal] ? journal), (if institution? then institution else undefined), funder, oa_permissions
         else
-          rs = API.service.jct[which] (issnsets[journal] ? journal), (if institution? and which is 'ta' then institution else undefined)
+          rs = API.service.jct[route_method] (issnsets[journal] ? journal), (if institution? and route_method is 'ta' then institution else undefined)
         if rs
           for r in (if _.isArray(rs) then rs else [rs])
             hascompliant = true if r.compliant is 'yes'
             if r.compliant is 'unknown'
               API.service.jct.unknown r, funder, journal, institution
             _results.push r
-        cr[which] = Date.now()
+        cr[route_method] = Date.now()
       , 1
     # calculate compliance for each route in checks
-    for c in checks
+    for r, c of checks
       _ck(c) if cr[c]
 
     # wait for all checks to finish
     # If true, the check is not yet done. Once done, a check will have the current datetime
-    while cr.sa is true or cr.doaj is true or cr.ta is true or cr.tj is true
+    while cr.sa is true or cr.fully_oa is true or cr.ta is true or cr.tj is true or cr.hybrid is true
       future = new Future()
       Meteor.setTimeout (() -> future.return()), 100
       future.wait()
 
     # calculate cards
-    funder_config = API.service.jct.funder_config funder, undefined
-    res.cards = _cards_for_display(funder_config, _results)
-    res.compliant = true if hascompliant
-    # res.compliant = true if res.cards and res.cards.length
+    cards_result = _cards_for_display(funder_config, _results)
+    res.cards = cards_result[0]
+    res.compliant = true if cards_result[1]
 
     delete res.cache if not allcached
     # store a new set of results every time without removing old ones, to keep track of incoming request amounts
@@ -872,9 +890,9 @@ API.service.jct.hybrid = (issn, institution, funder, oa_permissions) ->
 
 
 # Calculate self archiving check. It combines, sa_prohibited, OA.works permission and rr checks
-API.service.jct.sa = (journal, institution, funder, oa_permissions, check_retention=true, sa_prohibition=true) ->
+API.service.jct.sa = (journal, institution, funder, oa_permissions, check_retention=true, check_sa_prohibition=true) ->
   # Get SA prohibition
-  if journal and sa_prohibition
+  if journal and check_sa_prohibition
     res_sa = API.service.jct.sa_prohibited journal, undefined
     if res_sa and res_sa.compliant is 'no'
       return res_sa
@@ -920,7 +938,7 @@ API.service.jct.sa = (journal, institution, funder, oa_permissions, check_retent
   return rs
 
 
-API.service.jct.doaj = (issn) ->
+API.service.jct.fully_oa = (issn) ->
   issn = issn.split(',') if typeof issn is 'string'
   res =
     route: 'fully_oa'
@@ -1844,12 +1862,15 @@ _cards_for_display = (funder_config, results) ->
       if r.compliant is "yes"
         compliantRoutes.push(r.route)
   # list the cards to display
+  is_compliant = false
   cards = []
   if funder_config
     if funder_config.cards? and funder_config.cards.length
       for cardConfig in funder_config.cards
         if _matches(cardConfig, compliantRoutes)
           cards.push(cardConfig)
+          if cardConfig.compliant is true
+            is_compliant = true
 
   # sort the cards according to the correct order
   sorted_cards = []
@@ -1862,4 +1883,4 @@ _cards_for_display = (funder_config, results) ->
     else
       sorted_cards = cards
 
-  return sorted_cards
+  return [sorted_cards, is_compliant]
