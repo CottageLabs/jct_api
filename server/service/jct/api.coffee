@@ -1,11 +1,14 @@
 import moment from 'moment'
 import mailgun from 'mailgun-js'
 import fs from 'fs'
+import path from 'path'
 import tar from 'tar'
 import Future from 'fibers/future'
 import { Random } from 'meteor/random'
 import unidecode from 'unidecode'
 import csvtojson from 'csvtojson'
+import jsYaml from 'js-yaml'
+import { Match } from 'meteor/check'
 import stream from 'stream'
 
 '''
@@ -52,6 +55,8 @@ jct_journal = new API.collection {index:"jct", type:"journal"}
 jct_agreement = new API.collection {index:"jct", type:"agreement"}
 jct_compliance = new API.collection {index:"jct", type:"compliance"}
 jct_unknown = new API.collection {index:"jct", type:"unknown"}
+jct_funder_config = new API.collection {index:"jct", type:"funder_config"}
+jct_funder_language = new API.collection {index:"jct", type:"funder_language"}
 
 
 # define endpoints that the JCT requires (to be served at a dedicated domain)
@@ -153,7 +158,19 @@ API.add 'service/jct/compliance', get: () -> return jct_compliance.search this.q
 
 API.add 'service/jct/test', get: () -> return API.service.jct.test this.queryParams
 
+API.add 'service/jct/funder_config', get: () ->
+  return API.service.jct.funder_config undefined, this.queryParams.refresh
+API.add 'service/jct/funder_config/:iid', get: () -> return API.service.jct.funder_config this.urlParams.iid
+API.add 'service/jct/funder_config/import', get: () ->
+  Meteor.setTimeout (() => API.service.jct.funder_config undefined, true), 1
+  return true
 
+API.add 'service/jct/funder_language', get: () ->
+  return API.service.jct.funder_language undefined, this.queryParams.refresh
+API.add 'service/jct/funder_language/:iid', get: () -> return API.service.jct.funder_language this.urlParams.iid
+API.add 'service/jct/funder_language/import', get: () ->
+  Meteor.setTimeout (() => API.service.jct.funder_language undefined, true), 1
+  return true
 
 _jct_clean = (str) ->
   pure = /[!-/:-@[-`{-~¡-©«-¬®-±´¶-¸»¿×÷˂-˅˒-˟˥-˫˭˯-˿͵;΄-΅·϶҂՚-՟։-֊־׀׃׆׳-״؆-؏؛؞-؟٪-٭۔۩۽-۾܀-܍߶-߹।-॥॰৲-৳৺૱୰௳-௺౿ೱ-ೲ൹෴฿๏๚-๛༁-༗༚-༟༴༶༸༺-༽྅྾-࿅࿇-࿌࿎-࿔၊-၏႞-႟჻፠-፨᎐-᎙᙭-᙮᚛-᚜᛫-᛭᜵-᜶។-៖៘-៛᠀-᠊᥀᥄-᥅᧞-᧿᨞-᨟᭚-᭪᭴-᭼᰻-᰿᱾-᱿᾽᾿-῁῍-῏῝-῟῭-`´-῾\u2000-\u206e⁺-⁾₊-₎₠-₵℀-℁℃-℆℈-℉℔№-℘℞-℣℥℧℩℮℺-℻⅀-⅄⅊-⅍⅏←-⏧␀-␦⑀-⑊⒜-ⓩ─-⚝⚠-⚼⛀-⛃✁-✄✆-✉✌-✧✩-❋❍❏-❒❖❘-❞❡-❵➔➘-➯➱-➾⟀-⟊⟌⟐-⭌⭐-⭔⳥-⳪⳹-⳼⳾-⳿⸀-\u2e7e⺀-⺙⺛-⻳⼀-⿕⿰-⿻\u3000-〿゛-゜゠・㆐-㆑㆖-㆟㇀-㇣㈀-㈞㈪-㉃㉐㉠-㉿㊊-㊰㋀-㋾㌀-㏿䷀-䷿꒐-꓆꘍-꘏꙳꙾꜀-꜖꜠-꜡꞉-꞊꠨-꠫꡴-꡷꣎-꣏꤮-꤯꥟꩜-꩟﬩﴾-﴿﷼-﷽︐-︙︰-﹒﹔-﹦﹨-﹫！-／：-＠［-｀｛-･￠-￦￨-￮￼-�]|\ud800[\udd00-\udd02\udd37-\udd3f\udd79-\udd89\udd90-\udd9b\uddd0-\uddfc\udf9f\udfd0]|\ud802[\udd1f\udd3f\ude50-\ude58]|\ud809[\udc00-\udc7e]|\ud834[\udc00-\udcf5\udd00-\udd26\udd29-\udd64\udd6a-\udd6c\udd83-\udd84\udd8c-\udda9\uddae-\udddd\ude00-\ude41\ude45\udf00-\udf56]|\ud835[\udec1\udedb\udefb\udf15\udf35\udf4f\udf6f\udf89\udfa9\udfc3]|\ud83c[\udc00-\udc2b\udc30-\udc93]/g;
@@ -267,9 +284,11 @@ API.service.jct.suggest.journal = (str, from, size) ->
   return total: res?.hits?.total ? 0, data: _.union starts.sort((a, b) -> return a.title.length - b.title.length), extra.sort((a, b) -> return a.title.length - b.title.length)
 
 
-API.service.jct.calculate = (params={}, refresh, checks=['sa', 'doaj', 'ta', 'tj'], retention=true, sa_prohibition=true) ->
+API.service.jct.calculate = (params={}, refresh, checks=['sa', 'doaj', 'ta', 'tj', 'hybrid'], retention=true, sa_prohibition=true) ->
   # given funder(s), journal(s), institution(s), find out if compliant or not
   # note could be given lists of each - if so, calculate all and return a list
+
+  # Get parameters
   if params.issn
     params.journal = params.issn
     delete params.issn
@@ -281,6 +300,7 @@ API.service.jct.calculate = (params={}, refresh, checks=['sa', 'doaj', 'ta', 'tj
     checks = if typeof params.checks is 'string' then params.checks.split(',') else params.checks
   retention = params.retention if params.retention?
 
+  # initialise basic result object
   res =
     request:
       started: Date.now()
@@ -294,11 +314,12 @@ API.service.jct.calculate = (params={}, refresh, checks=['sa', 'doaj', 'ta', 'tj
     compliant: false
     cache: true
     results: []
+    cards: undefined
 
   return res if not params.journal
 
-  issnsets = {}
-  
+  # Get the matching data for the request parameters from suggest
+  issnsets = {} # set of all matching ISSNs for given journal (ISSN)
   for p in ['funder','journal','institution']
     params[p] = params[p].toString() if typeof params[p] is 'number'
     params[p] = params[p].split(',') if typeof params[p] is 'string'
@@ -311,19 +332,27 @@ API.service.jct.calculate = (params={}, refresh, checks=['sa', 'doaj', 'ta', 'tj
           issnsets[v] ?= ad.issn if p is 'journal' and _.isArray(ad.issn) and ad.issn.length
       res.request[p].push({id: v}) if not sg?.data
 
+  # calculate compliance for each combo, for all the routes
   rq = Random.id() # random ID to store with the cached results, to measure number of unique requests that aggregate multiple sets of entities
   checked = 0
   _check = (funder, journal, institution) ->
     hascompliant = false
     allcached = true
     _results = []
-    cr = sa: ('sa' in checks), doaj: ('doaj' in checks), ta: ('ta' in checks), tj: ('tj' in checks)
 
+    oa_permissions = API.service.jct.oa_works (issnsets[journal] ? journal), (if institution? then institution else undefined)
+
+    # checks to perform
+    cr = sa: ('sa' in checks), doaj: ('doaj' in checks), ta: ('ta' in checks), tj: ('tj' in checks), hybrid: ('hybrid' in checks)
+
+    # calculate compliance for the route (which)
     _ck = (which) ->
       allcached = false
       Meteor.setTimeout () ->
         if which is 'sa'
-          rs = API.service.jct.sa (issnsets[journal] ? journal), (if institution? then institution else undefined), funder, retention, sa_prohibition
+          rs = API.service.jct.sa (issnsets[journal] ? journal), (if institution? then institution else undefined), funder, oa_permissions, retention, sa_prohibition
+        else if which is 'hybrid'
+          rs =  API.service.jct.hybrid (issnsets[journal] ? journal), (if institution? then institution else undefined), funder, oa_permissions
         else
           rs = API.service.jct[which] (issnsets[journal] ? journal), (if institution? and which is 'ta' then institution else undefined)
         if rs
@@ -334,14 +363,23 @@ API.service.jct.calculate = (params={}, refresh, checks=['sa', 'doaj', 'ta', 'tj
             _results.push r
         cr[which] = Date.now()
       , 1
+    # calculate compliance for each route in checks
     for c in checks
       _ck(c) if cr[c]
 
+    # wait for all checks to finish
+    # If true, the check is not yet done. Once done, a check will have the current datetime
     while cr.sa is true or cr.doaj is true or cr.ta is true or cr.tj is true
       future = new Future()
       Meteor.setTimeout (() -> future.return()), 100
       future.wait()
+
+    # calculate cards
+    funder_config = API.service.jct.funder_config funder, undefined
+    res.cards = _cards_for_display(funder_config, _results)
     res.compliant = true if hascompliant
+    # res.compliant = true if res.cards and res.cards.length
+
     delete res.cache if not allcached
     # store a new set of results every time without removing old ones, to keep track of incoming request amounts
     jct_compliance.insert journal: journal, funder: funder, institution: institution, retention: retention, rq: rq, checks: checks, compliant: hascompliant, cache: allcached, results: _results
@@ -349,7 +387,8 @@ API.service.jct.calculate = (params={}, refresh, checks=['sa', 'doaj', 'ta', 'tj
 
     checked += 1
 
-  combos = [] # make a list of all possible valid combos of params
+  # make a list of all possible valid combos of params
+  combos = []
   for j in (if params.journal and params.journal.length then params.journal else [undefined])
     cm = journal: j
     for f in (if params.funder and params.funder.length then params.funder else [undefined]) # does funder have any effect? - probably not right now, so the check will treat them the same
@@ -731,7 +770,14 @@ API.service.jct.retention = (issn, refresh) ->
     return jct_journal.count 'retained:true'
 
 
-API.service.jct.permission = (issn, institution) ->
+API.service.jct.oa_works = (issn, institution) ->
+  issn = issn.split(',') if typeof issn is 'string'
+  permsurl = 'https://api.openaccessbutton.org/permissions?meta=false&issn=' + (if typeof issn is 'string' then issn else issn.join(',')) + (if typeof institution is 'string' then '&ror=' + institution else if institution? and Array.isArray(institution) and institution.length then '&ror=' + institution.join(',') else '')
+  perms = HTTP.call('GET', permsurl, {timeout:3000}).data
+  return perms
+
+
+API.service.jct.permission = (issn, institution, perms) ->
   issn = issn.split(',') if typeof issn is 'string'
   res =
     route: 'self_archiving'
@@ -743,8 +789,6 @@ API.service.jct.permission = (issn, institution) ->
     log: []
 
   try
-    permsurl = 'https://api.openaccessbutton.org/permissions?meta=false&issn=' + (if typeof issn is 'string' then issn else issn.join(',')) + (if typeof institution is 'string' then '&ror=' + institution else if institution? and Array.isArray(institution) and institution.length then '&ror=' + institution.join(',') else '')
-    perms = HTTP.call('GET', permsurl, {timeout:3000}).data
     if perms.best_permission?
       res.compliant = 'no' # set to no until a successful route through is found
       pb = perms.best_permission
@@ -784,8 +828,49 @@ API.service.jct.permission = (issn, institution) ->
   return res
 
 
+API.service.jct.hybrid = (issn, institution, funder, oa_permissions) ->
+  issn = issn.split(',') if typeof issn is 'string'
+  res =
+    route: 'hybrid'
+    compliant: 'unknown'
+    qualifications: undefined
+    issn: issn
+    ror: institution
+    funder: funder
+    log: []
+
+  if oa_permissions.best_permission?.issuer?.journal_oa_type?
+    pb = oa_permissions.best_permission.issuer.journal_oa_type
+    if pb isnt 'hybrid'
+      res.compliant = 'no'
+      res.log.push code: 'Hybrid.NotInOAW'
+    else
+      res.log.push code: 'Hybrid.InOAW'
+      # get list of licences and matching license condition
+      lc = false
+      licences = [] # have to do these now even if can't archive, because needed for new API code algo values
+      for l in pb.licences ? []
+        licences.push l.type
+        # TODO: Need to match with funder config
+        if lc is false and l.type.toLowerCase().replace(/\-/g,'').replace(/ /g,'') in ['ccby','ccbysa','cc0','ccbynd']
+          lc = l.type # set the first but have to keep going for new API codes algo
+      # check if license is compliant
+      if lc
+        res.log.push code: 'Hybrid.Compliant', parameters: licence: licences
+        res.compliant = 'yes'
+      else if not licences or licences.length is 0
+        res.log.push code: 'Hybrid.Unknown', parameters: missing: ['licences']
+        res.compliant = 'unknown'
+      else
+        res.log.push code: 'Hybrid.NonCompliant', parameters: licence: licences
+  else
+    res.log.push code: 'Hybrid.Unknown', parameters: missing: ['journal type']
+    res.compliant = 'unknown'
+  return res
+
+
 # Calculate self archiving check. It combines, sa_prohibited, OA.works permission and rr checks
-API.service.jct.sa = (journal, institution, funder, retention=true, sa_prohibition=true) ->
+API.service.jct.sa = (journal, institution, funder, oa_permissions, retention=true, sa_prohibition=true) ->
   # Get SA prohibition
   if journal and sa_prohibition
     res_sa = API.service.jct.sa_prohibited journal, undefined
@@ -793,7 +878,7 @@ API.service.jct.sa = (journal, institution, funder, retention=true, sa_prohibiti
       return res_sa
 
   # Get OA.Works permission
-  rs = API.service.jct.permission journal, institution
+  rs = API.service.jct.permission journal, institution, oa_permissions
 
   # merge the qualifications and logs from SA prohibition into OA.Works permission
   rs.qualifications ?= []
@@ -1108,7 +1193,15 @@ API.service.jct.import = (refresh) ->
     console.log 'Starting TAs data import'
     res.ta = API.service.jct.ta.import false # this is the slowest, takes about twenty minutes
     console.log 'JCT import TAs complete'
-  
+
+    console.log 'Starting Funder db config import'
+    API.service.jct.funder_config.import()
+    console.log 'JCT import Funder db config complete'
+
+    console.log 'Starting Funder db language import'
+    API.service.jct.funder_language.import()
+    console.log 'JCT import Funder db language complete'
+
     # check the mappings on jct_journal, jct_agreement, any others that get used and changed during import
     # include a warning in the email if they seem far out of sync
     # and include the previously and presently count, they should not be too different
@@ -1576,3 +1669,193 @@ API.service.jct.test = (params={}) ->
     _add_final_outcome(res, final_result)
   return final_result
 
+# return the funder config for an id. Import the data if refresh is true
+API.service.jct.funder_config = (id, refresh) ->
+  if refresh
+    console.log('Got refresh - importing funder config')
+    Meteor.setTimeout (() => API.service.jct.funder_config.import()), 1
+    return true
+  if id
+    rec = jct_funder_config.find 'id.exact:"' + id.toLowerCase().trim() + '"'
+    if rec
+      return rec
+    return {}
+  else
+    return total: jct_funder_config.count()
+
+
+# For each funder in jct-funderdb repo, get the final funder configuration
+# The funder's specific config file gets merged with the default config file, to create the final config file
+# This is saved in elastic search
+API.service.jct.funder_config.import = () ->
+  funderdb_path = path.join(process.env.PWD, API.settings.funderdb)
+  default_config_file = path.join(funderdb_path, 'default', 'config.yml')
+  default_config = jsYaml.load(fs.readFileSync(default_config_file, 'utf8'));
+  funders_config = []
+  # For each funder in directory
+  for f in fs.readdirSync funderdb_path
+    # parse and get the merged config file if it isn't default
+    if f isnt 'default'
+      funder_config_file = path.join(funderdb_path, f, 'config.yml')
+      if fs.existsSync funder_config_file
+        funder_config = jsYaml.load(fs.readFileSync(funder_config_file, 'utf8'));
+        merged_config = _merge_funder_config(default_config, funder_config)
+        funders_config.push(merged_config)
+  if funders_config.length
+    console.log 'Removing and reloading ' + funders_config.length + ' funders configuration'
+    jct_funder_config.remove '*'
+    jct_funder_config.insert funders_config
+  return
+
+# return the funder language for an id. Import the data if refresh is true
+API.service.jct.funder_language = (id, refresh) ->
+  if refresh
+    console.log('Got refresh - importing funder language files')
+    Meteor.setTimeout (() => API.service.jct.funder_language.import()), 1
+    return true
+  if id
+    rec = jct_funder_language.find 'id.exact:"' + id.toLowerCase().trim() + '"'
+    if rec
+      return rec
+    return {}
+  else
+    return total: jct_funder_language.count()
+
+# For each funder in jct-funderdb repo, get the final funder language file
+# The funder's specific language files get merged with the default language files, to create the final language file
+# This is saved in elastic search
+API.service.jct.funder_language.import = () ->
+  funderdb_path = path.join(process.env.PWD, API.settings.funderdb)
+  default_lang_files_path = path.join(funderdb_path, 'default', 'lang')
+  default_language = _flatten_yaml_files(default_lang_files_path)
+  funders_language = []
+  for f in fs.readdirSync funderdb_path
+    # parse and get the merged config file if it isn't default
+    if f isnt 'default'
+      funder_lang_files_path = path.join(funderdb_path, f, 'lang')
+      if fs.existsSync funder_lang_files_path
+        merged_lang = _merge_language_files(default_language, funder_lang_files_path)
+        merged_lang['id'] = f
+        funders_language.push(merged_lang)
+      else
+        merged_lang = JSON.parse(JSON.stringify(default_language))
+        merged_lang['id'] = f
+        funders_language.push(merged_lang)
+  if funders_language.length
+    console.log 'Removing and reloading ' + funders_language.length + ' funders language files'
+    jct_funder_language.remove '*'
+    jct_funder_language.insert funders_language
+  return
+
+_merge_funder_config = (default_config, funder_config) ->
+  result = _jct_object_merge(default_config, funder_config)
+  return result
+
+_merge_language_files = (default_language, language_files_path) ->
+  funder_lang = _flatten_yaml_files(language_files_path)
+  result = _jct_object_merge(default_language, funder_lang)
+  return result
+
+_jct_object_merge = (default_object, specific_object) ->
+  result = JSON.parse(JSON.stringify(default_object)) # deep copy object
+  for key in Object.keys(specific_object)
+    # If specific_object[key] is an object and the key exists in default_object
+    if Match.test(specific_object[key], Object)
+      if key in Object.keys(default_object)
+        result[key] = _jct_object_merge(default_object[key], specific_object[key])
+      else
+        result[key] = specific_object[key]
+    else
+      result[key] = specific_object[key]
+  return result
+
+_flatten_yaml_files = (lang_files_path) ->
+  flattened_config = {}
+  if not fs.existsSync lang_files_path
+    return flattened_config
+  if not fs.lstatSync(lang_files_path).isDirectory()
+    return flattened_config
+  for sub_file_name in fs.readdirSync lang_files_path
+    sub_file_path = path.join(lang_files_path, sub_file_name)
+    if fs.existsSync(sub_file_path) && fs.lstatSync(sub_file_path).isDirectory()
+      flattened_config[sub_file_name] = _flatten_yaml_files(sub_file_path)
+    else
+      menu = sub_file_name.split('.')[0]
+      flattened_config[menu] = jsYaml.load(fs.readFileSync(sub_file_path, 'utf8'));
+  return flattened_config
+
+_cards_for_display = (funder_config, results) ->
+  _hasQualification = (path) ->
+    parts = path.split(".")
+    if results and results.length
+      for r in results
+        if parts[0] is r.route
+          if r.qualifications? and r.qualifications.length
+            for q in r.qualifications
+              if parts[1] of q # key is in q
+                return true
+    return false
+
+  _matches_qualifications = (qualifications) ->
+    if not qualifications
+      return true
+    if qualifications.must? and qualifications.must.length
+      for m_q in qualifications.must
+        return false if not _hasQualification(m_q)
+    if qualifications.not? and qualifications.not.length
+      for n_q in qualifications.not
+        return false if _hasQualification(n_q)
+    if qualifications.or? and qualifications.or.length
+      for o_q in qualifications.or
+        return true if _hasQualification(oq)
+      return false
+    return true
+
+  _matches_routes = (routes, compliantRoutes) ->
+    if not routes
+      return true
+    if routes.must? and routes.must.length
+      for m_r in routes.must
+        if m_r not in compliantRoutes
+          return false
+    if routes.not? and routes.not.length
+      for n_r in routes.not
+        if n_r in compliantRoutes
+          return false
+    if routes['or']? and routes['or'].length
+      for o_r in routes['or']
+        if o_r in compliantRoutes
+          return true
+      return false
+    return true
+
+  _matches = (cardConfig, compliantRoutes) ->
+    _matches_routes(cardConfig.match_routes, compliantRoutes) &&
+      _matches_qualifications(cardConfig.match_qualifications);
+
+  # compliant routes
+  compliantRoutes = []
+  if results and results.length
+    for r in results
+      if r.compliant is "yes"
+        compliantRoutes.push(r.route)
+  # list the cards to display
+  cards = []
+  if funder_config
+    if funder_config.cards? and funder_config.cards.length
+      for cardConfig in funder_config.cards
+        if _matches(cardConfig, compliantRoutes)
+          cards.push(cardConfig)
+
+  # sort the cards according to the correct order
+  sorted_cards = []
+  if cards
+    if funder_config.card_order? and funder_config.card_order.length
+      for next_card in funder_config.card_order
+        for card in cards
+          if card.id is next_card
+            sorted_cards.push(card)
+    else
+      sorted_cards = cards
+
+  return sorted_cards
