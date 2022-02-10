@@ -7,8 +7,7 @@
   },
   "es": {
     "url": "http://localhost:9200",
-    "index": "noddy",
-    "sub_index": "jct"
+    "index": "jct"
   },
   "service": {
     "jct": {
