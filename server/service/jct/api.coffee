@@ -47,11 +47,13 @@ funders will be a list given to us by JCT detailing their particular requirement
 # it should be followed by manually triggering a full import on live
 # (for convenience the settings have initially been set up to only run import on dev as well, to make the most 
 # of the dev machine and minimise any potential memory or CPU intense work on the live machine - see the settings.json file for this config)
-@jct_institution = new API.collection {index:"jct", type:"institution", devislive: true}
-jct_journal = new API.collection {index:"jct", type:"journal"}
-jct_agreement = new API.collection {index:"jct", type:"agreement"}
-jct_compliance = new API.collection {index:"jct", type:"compliance"}
-jct_unknown = new API.collection {index:"jct", type:"unknown"}
+
+index_name = API.settings.es.sub_index ? 'jct'
+@jct_institution = new API.collection {index:index_name, type:"institution", devislive: true}
+jct_journal = new API.collection {index:index_name, type:"journal"}
+jct_agreement = new API.collection {index:index_name, type:"agreement"}
+jct_compliance = new API.collection {index:index_name, type:"compliance"}
+jct_unknown = new API.collection {index:index_name, type:"unknown"}
 
 
 # define endpoints that the JCT requires (to be served at a dedicated domain)
@@ -1231,12 +1233,13 @@ API.service.jct.import = (refresh) ->
 _jct_import = () ->
   try API.service.jct.funders undefined, true # get the funders at startup
   if API.settings.service?.jct?.import isnt false # so defaults to run if not set to false in settings
-    console.log 'Setting up a daily import check which will run an import if it is a Saturday'
+    console.log 'Setting up a daily import check which will run an import if it is day ' + API.settings.service.jct.import_day
     # if later updates are made to run this on a cluster again, make sure that only one server runs this (e.g. use the import setting above where necessary)
     Meteor.setInterval () ->
       today = new Date()
-      if today.getDay() is 6 # if today is a Saturday run an import
-        console.log 'Starting Saturday import'
+      if today.getDay() is API.settings.service.jct.import_day
+        # if import_day number matches, run import. Days are numbered 0 to 6, Sun to Sat
+        console.log 'Starting day ' + API.settings.service.jct.import_day + ' import'
         API.service.jct.import()
     , 86400000
 Meteor.setTimeout _jct_import, 5000
@@ -1267,7 +1270,7 @@ API.service.jct.unknown = (res, funder, journal, institution, send) ->
       else
         q = '*'
       last = false
-      for un in jct_unknown.fetch q, {newest: false}
+      for un in (jct_unknown.fetch q, {newest: false})
         start = un.createdAt if start is false
         end = un.createdAt
         last = un
