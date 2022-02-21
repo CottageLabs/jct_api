@@ -47,13 +47,13 @@ funders will be a list given to us by JCT detailing their particular requirement
 # NOTE: doing this would mean live would not have recent data to read from, so after this code change is deployed to live 
 # it should be followed by manually triggering a full import on live
 # (for convenience the settings have initially been set up to only run import on dev as well, to make the most 
-# of the dev machine and minimise any potential memory or CPU intense work on the live machine - see the settings.json file for this config)
-jct_institution = new API.collection {index:"jct", type:"institution"}
-jct_journal = new API.collection {index:"jct", type:"journal"}
-jct_agreement = new API.collection {index:"jct", type:"agreement"}
-jct_compliance = new API.collection {index:"jct", type:"compliance"}
-jct_unknown = new API.collection {index:"jct", type:"unknown"}
-
+# of the dev machine and minimise any potential memory or CPU intense work 
+index_name = API.settings.es.index ? 'jct'
+jct_institution = new API.collection {index:index_name, type:"institution"}
+jct_journal = new API.collection {index:index_name, type:"journal"}
+jct_agreement = new API.collection {index:index_name, type:"agreement"}
+jct_compliance = new API.collection {index:index_name, type:"compliance"}
+jct_unknown = new API.collection {index:index_name, type:"unknown"}
 
 # define endpoints that the JCT requires (to be served at a dedicated domain)
 API.add 'service/jct', get: () -> return 'cOAlition S Journal Checker Tool. Service provided by Cottage Labs LLP. Contact us@cottagelabs.com'
@@ -749,38 +749,137 @@ API.service.jct.permission = (issn, institution) ->
   try
     permsurl = 'https://api.openaccessbutton.org/permissions?meta=false&issn=' + (if typeof issn is 'string' then issn else issn.join(',')) + (if typeof institution is 'string' then '&ror=' + institution else if institution? and Array.isArray(institution) and institution.length then '&ror=' + institution.join(',') else '')
     perms = HTTP.call('GET', permsurl, {timeout:3000}).data
-    if perms.best_permission?
-      res.compliant = 'no' # set to no until a successful route through is found
-      pb = perms.best_permission
-      res.log.push code: 'SA.InOAB'
-      lc = false
-      pbls = [] # have to do these now even if can't archive, because needed for new API code algo values
-      for l in pb.licences ? []
-        pbls.push l.type
-        if lc is false and l.type.toLowerCase().replace(/\-/g,'').replace(/ /g,'') in ['ccby','ccbysa','cc0','ccbynd']
-          lc = l.type # set the first but have to keep going for new API codes algo
-      if pb.can_archive
-        if 'postprint' in pb.versions or 'publisher pdf' in pb.versions or 'acceptedVersion' in pb.versions or 'publishedVersion' in pb.versions
-          # and Embargo is zero
-          if typeof pb.embargo_months is 'string'
-            try pb.embargo_months = parseInt pb.embargo_months
-          if typeof pb.embargo_months isnt 'number' or pb.embargo_months is 0
-            if lc
-              res.log.push code: 'SA.OABCompliant', parameters: licence: pbls, embargo: (if pb.embargo_months? then [pb.embargo_months] else undefined), version: pb.versions
-              res.compliant = 'yes'
-            else if not pb.licences? or pb.licences.length is 0
-              res.log.push code: 'SA.OABIncomplete', parameters: missing: ['licences']
-              res.compliant = 'unknown'
-            else
-              res.log.push code: 'SA.OABNonCompliant', parameters: licence: pbls, embargo: (if pb.embargo_months? then [pb.embargo_months] else undefined), version: pb.versions
-          else
-            res.log.push code: 'SA.OABNonCompliant', parameters: licence: pbls, embargo: (if pb.embargo_months? then [pb.embargo_months] else undefined), version: pb.versions
-        else
-          res.log.push code: 'SA.OABNonCompliant', parameters: licence: pbls, embargo: (if pb.embargo_months? then [pb.embargo_months] else undefined), version: pb.versions
-      else
-        res.log.push code: 'SA.OABNonCompliant', parameters: licence: pbls, embargo: (if pb.embargo_months? then [pb.embargo_months] else undefined), version: pb.versions
-    else
+    if not perms.all_permissions? or perms.all_permissions.length is 0
       res.log.push code: 'SA.NotInOAB'
+    else
+      # gather values from permission
+      _gather_values = (permission) =>
+        # initialise values to be gathered
+        values =
+          licences: [],
+          versions: undefined,
+          embargo: undefined,
+          planS: undefined,
+          score: undefined,
+          compliant: 'no'
+        # licences - get all license types
+        if permission.licences? and permission.licences.length
+          for l in permission.licences ? []
+            values.licences.push l.type
+        # versions
+        if permission.versions? and permission.versions.length
+          values.versions = permission.versions
+        # embargo
+        if permission.embargo_months?
+          if typeof permission.embargo_months is 'string'
+            try permission.embargo_months = parseInt permission.embargo_months
+          values.embargo = [permission.embargo_months]
+        # planS compliant funder
+        if permission.requirements?.funder? and permission.requirements.funder.length and 'Plan S' in permission.requirements.funder
+          values.planS = true
+        # score
+        if permission.score?
+          values.score = permission.score
+          if typeof values.score is 'string'
+            try values.score = parseInt values.score
+        return values
+
+      # gather outcome of individual checks for permission
+      _gather_checks = (permission) =>
+        checks =
+          archive: undefined,
+          version: undefined,
+          requirements: undefined,
+          embargo: undefined,
+          matched_license: undefined,
+          license: undefined
+
+        # Perform each of the checks
+        # archive - check if permission allows archiving
+        checks.archive = if permission.can_archive then true else false
+        # version - check for acceptable version
+        checks.version = if 'postprint' in permission.versions or 'publisher pdf' in permission.versions or 'acceptedVersion' in permission.versions or 'publishedVersion' in permission.versions then true else false
+        # requirements - check if there is no requirement or requirement matches Plan S
+        if permission.requirements?
+          if permission.requirements.funder? and permission.requirements.funder.length and 'Plan S' in permission.requirements.funder
+            checks.requirements = true
+          else
+            checks.requirements = false
+        else
+          checks.requirements = true
+        # check if embargo is 0 (if integer value)
+        if permission.embargo_months?
+          if typeof permission.embargo_months isnt 'number' or permission.embargo_months is 0
+            checks.embargo = true
+          else
+            checks.embargo = false
+        else
+          checks.embargo = true
+        # matched_license - get first matching license
+        if permission.licences? and permission.licences.length
+          for l in permission.licences ? []
+            if checks.matched_license is undefined and l.type.toLowerCase().replace(/\-/g,'').replace(/ /g,'') in ['ccby','ccbysa','cc0','ccbynd']
+              checks.matched_license = l.type
+        # license - check for matching license or missing license
+        if checks.matched_license or not permission.licences? or permission.licences.length is 0
+          checks.license = true
+        return checks
+
+      # get best permission based on score
+      _best_permission = (list_of_values) =>
+        if not list_of_values or list_of_values.length is 0
+          return undefined
+        best_score = 0
+        selected_value = undefined
+        for value in list_of_values
+          if value.score? and typeof value.score is 'number' and value.score > best_score
+            best_score = value.score
+            selected_value = value
+        if not selected_value
+          selected_value = list_of_values[0]
+        return selected_value
+
+      # evaluate each permission from OA works
+      oa_check =
+        OABCompliant: [],
+        OABIncomplete: [],
+        OABNonCompliant: []
+      for permission in perms.all_permissions
+        p_values = _gather_values(permission)
+        p_checks = _gather_checks(permission)
+        if p_checks.archive and \
+          p_checks.requirements and \
+          p_checks.version and \
+          p_checks.embargo and \
+          p_checks.license
+          if p_checks.matched_license
+            p_values.compliant = 'yes'
+            oa_check.OABCompliant.push(p_values)
+          else
+            p_values.compliant = 'unknown'
+            p_values.missing = ['licences']
+            oa_check.OABIncomplete.push(p_values)
+        else
+          oa_check.OABNonCompliant.push(p_values)
+
+      # return best result
+      pb = undefined
+      if oa_check.OABCompliant.length
+        pb = _best_permission(oa_check.OABCompliant)
+        res.compliant = pb.compliant
+        res.log.push code: 'SA.OABCompliant', parameters: licence: pb.licences, embargo: pb.embargo, version: pb.versions
+        # ToDo - if planS in pb, do we need to add a qualification?
+      else if oa_check.OABIncomplete.length
+        pb = _best_permission(oa_check.OABIncomplete)
+        res.compliant = pb.compliant
+        res.log.push code: 'SA.OABIncomplete', parameters: missing: pb.missing
+      else if oa_check.OABNonCompliant.length
+        pb = _best_permission(oa_check.OABNonCompliant)
+        res.compliant = pb.compliant
+        res.log.push code: 'SA.OABNonCompliant', parameters: licence: pb.licences, embargo: pb.embargo, version: pb.versions
+      else
+        res.compliant = 'unknown'
+        res.log.push code: 'SA.OABIncomplete', parameters: missing: ['licences']
   catch
     # Fixme: if we don't get an answer then we don't have the info, but this may not be strictly what we want.
     res.log.push code: 'SA.OABIncomplete', parameters: missing: ['licences']
@@ -964,7 +1063,8 @@ API.service.jct.journals.import = (refresh) ->
     total = 0
     counter = 0
     batch = []
-    while total is 0 or counter < total
+    error_count = 0
+    while (total is 0 or counter < total) and error_count < 10
       if batch.length >= 10000 or (removed and batch.length >= 5000)
         if not removed
           # makes a shorter period of lack of records to query
@@ -1007,13 +1107,16 @@ API.service.jct.journals.import = (refresh) ->
             batch.push rec
         counter += 1000
       catch err
+        error_count += 1
         future = new Future()
         Meteor.setTimeout (() -> future.return()), 2000 # wait 2s on probable crossref downtime
         future.wait()
     if batch.length
       jct_journal.insert batch
       batch = []
-    
+    if error_count >= 10
+      console.log 'Crossref import had ' + error_count + ' errors. Backing off. Imported ' + batch.length + ' of ' + total + ' records.'
+
     # then load the DOAJ data from the file (crossref takes priority because it has better metadata for spotting discontinuations)
     # only about 20% of the ~15k are not already in crossref, so do updates then bulk load the new ones
     console.log 'Importing from DOAJ journal dump ' + current
@@ -1082,8 +1185,10 @@ API.service.jct.journals.import = (refresh) ->
   
 
 API.service.jct.import = (refresh) ->
-  res = previously: jct_journal.count(), presently: undefined, started: Date.now()
-  res.newest = jct_agreement.find '*', true
+  res = {}
+  if jct_journal
+    res = previously: jct_journal.count(), presently: undefined, started: Date.now()
+    res.newest = jct_agreement.find '*', true
   if refresh or res.newest?.createdAt < Date.now()-86400000
     # run all imports necessary for up to date data
     console.log 'Starting JCT imports'
@@ -1137,12 +1242,13 @@ API.service.jct.import = (refresh) ->
 _jct_import = () ->
   try API.service.jct.funders undefined, true # get the funders at startup
   if API.settings.service?.jct?.import isnt false # so defaults to run if not set to false in settings
-    console.log 'Setting up a daily import check which will run an import if it is a Saturday'
+    console.log 'Setting up a daily import check which will run an import if it is day ' + API.settings.service.jct.import_day
     # if later updates are made to run this on a cluster again, make sure that only one server runs this (e.g. use the import setting above where necessary)
     Meteor.setInterval () ->
       today = new Date()
-      if today.getDay() is 6 # if today is a Saturday run an import
-        console.log 'Starting Saturday import'
+      if today.getDay() is API.settings.service.jct.import_day
+        # if import_day number matches, run import. Days are numbered 0 to 6, Sun to Sat
+        console.log 'Starting day ' + API.settings.service.jct.import_day + ' import'
         API.service.jct.import()
     , 86400000
 Meteor.setTimeout _jct_import, 5000
@@ -1173,7 +1279,7 @@ API.service.jct.unknown = (res, funder, journal, institution, send) ->
       else
         q = '*'
       last = false
-      for un in jct_unknown.fetch q, {newest: false}
+      for un in (jct_unknown.fetch q, {newest: false})
         start = un.createdAt if start is false
         end = un.createdAt
         last = un
