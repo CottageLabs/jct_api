@@ -6,6 +6,7 @@ import Future from 'fibers/future'
 import { Random } from 'meteor/random'
 import unidecode from 'unidecode'
 import csvtojson from 'csvtojson'
+import AdmZip from "adm-zip"
 import stream from 'stream'
 
 '''
@@ -46,15 +47,13 @@ funders will be a list given to us by JCT detailing their particular requirement
 # NOTE: doing this would mean live would not have recent data to read from, so after this code change is deployed to live 
 # it should be followed by manually triggering a full import on live
 # (for convenience the settings have initially been set up to only run import on dev as well, to make the most 
-# of the dev machine and minimise any potential memory or CPU intense work on the live machine - see the settings.json file for this config)
-
+# of the dev machine and minimise any potential memory or CPU intense work 
 index_name = API.settings.es.index ? 'jct'
-@jct_institution = new API.collection {index:index_name, type:"institution", devislive: true}
+jct_institution = new API.collection {index:index_name, type:"institution"}
 jct_journal = new API.collection {index:index_name, type:"journal"}
 jct_agreement = new API.collection {index:index_name, type:"agreement"}
 jct_compliance = new API.collection {index:index_name, type:"compliance"}
 jct_unknown = new API.collection {index:index_name, type:"unknown"}
-
 
 # define endpoints that the JCT requires (to be served at a dedicated domain)
 API.add 'service/jct', get: () -> return 'cOAlition S Journal Checker Tool. Service provided by Cottage Labs LLP. Contact us@cottagelabs.com'
@@ -148,6 +147,10 @@ API.add 'service/jct/unknown/:start/:end',
 
 API.add 'service/jct/journal', get: () -> return jct_journal.search this.queryParams
 API.add 'service/jct/institution', get: () -> return jct_institution.search this.queryParams
+API.add 'service/jct/institution/:iid', get: () -> return API.service.jct.institution this.urlParams.iid
+API.add 'service/jct/institution/import', get: () ->
+  Meteor.setTimeout (() => API.service.jct.institution undefined, true), 1
+  return true
 API.add 'service/jct/compliance', get: () -> return jct_compliance.search this.queryParams
 # the results that have already been calculated. These used to get used to re-serve as a 
 # faster cached result, but uncertainties over agreement on how long to cache stuff made 
@@ -178,7 +181,6 @@ API.service.jct.suggest.funder = (str, from, size) ->
   return total: res.length, data: res
 
 API.service.jct.suggest.institution = (str, from, size) ->
-  # TODO add an import method from wikidata or ROR, and have the usual import routine check for changes on a suitable schedule
   if typeof str is 'string' and str.length is 9 and rec = jct_institution.get str
     delete rec[x] for x in ['createdAt', 'created_date', '_id', 'description', 'values', 'wid']
     return total: 1, data: [rec]
@@ -1212,6 +1214,11 @@ API.service.jct.import = (refresh) ->
     res.funders = res.funders.length if _.isArray res.funders
     console.log 'JCT import funders complete'
 
+    # Institution data does not change regularly
+    # console.log 'Starting institution (ror) import'
+    # API.service.jct.institution.import()
+    # console.log 'JCT import institution (ror) complete'
+
     console.log 'Starting TAs data import'
     res.ta = API.service.jct.ta.import false # this is the slowest, takes about twenty minutes
     console.log 'JCT import TAs complete'
@@ -1524,4 +1531,72 @@ API.service.jct.test = (params={}) ->
   delete res.fails if not res.fails.length
   return res
 
+
+# return the institution for an id. Import the data if refresh is true
+API.service.jct.institution = (id, refresh) ->
+  if refresh
+    console.log('Got refresh - importing institution (ror)')
+    Meteor.setTimeout (() => API.service.jct.institution.import()), 1
+    return true
+  if id
+    rec = jct_institution.find 'id.exact:"' + id.toLowerCase().trim() + '"'
+    if rec
+      return rec
+    return {}
+  else
+    return total: jct_institution.count()
+
+# import institution data from ror
+API.service.jct.institution.import = () ->
+  _set_id = (rec) ->
+    ror = rec.id
+    id = ror.replace("https://ror.org/", '')
+    rec.id = id
+    rec.ror = id
+    rec.ror_id = ror
+    return rec
+
+  _set_title = (rec) ->
+    rec.title = rec.name
+    return rec
+
+  # Download zip file from github containing data dump of RoR
+  fldr = '/tmp/jct_ror' + (if API.settings.dev then '_dev' else '') + '/'
+  if fs.existsSync fldr
+    fs.rmdirSync(fldr, { recursive: true });
+  fs.mkdirSync fldr
+  filepath = fldr + 'ror.zip'
+  ror_data_dump_url = 'https://github.com/ror-community/ror-api/raw/master/rorapi/data/ror-2021-09-23/ror.zip'
+  fs.writeFileSync filepath, HTTP.call('GET', ror_data_dump_url, {npmRequestOptions:{encoding:null}}).content
+  console.log 'Importing from ROR data dump ' + fldr + 'ror.zip'
+  zip = AdmZip(filepath)
+  zip.extractEntryTo("ror.json", fldr)
+
+  # Remove old data and index new
+  removed = false
+  batch = []
+  counter = 1
+  imports = 0
+  for rec in JSON.parse fs.readFileSync fldr + 'ror.json'
+    if batch.length >= 20000
+      if not removed
+        console.log 'Removing old institution records'
+        jct_institution.remove '*'
+        future = new Future()
+        Meteor.setTimeout (() -> future.return()), 10000
+        future.wait()
+        removed = true
+      console.log 'Importing RoR batch ' + counter
+      jct_institution.insert batch
+      counter += 1
+      batch = []
+    rec = _set_id(rec)
+    rec = _set_title(rec)
+    batch.push rec
+    imports += 1
+  if batch.length
+    console.log 'Importing RoR batch ' + counter
+    jct_institution.insert batch
+    batch = []
+  console.log('Completed importing ror data ', imports)
 
