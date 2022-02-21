@@ -7,13 +7,14 @@
   },
   "es": {
     "url": "http://localhost:9200",
-    "index": "noddy"
+    "index": "jct"
   },
   "service": {
     "jct": {
       "doaj": {
         "apikey": "<add doaj api key here>"
-      }
+      },
+      "import_day": 6
     }
   },
   "data_url": {
