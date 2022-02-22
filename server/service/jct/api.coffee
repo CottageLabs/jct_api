@@ -317,7 +317,7 @@ API.service.jct.calculate = (params={}, refresh) ->
       journal: []
       funder: []
       institution: []
-      checks: checks
+      checks: (prop for own prop, _value of checks)
     compliant: false
     cache: true
     results: []
@@ -353,14 +353,12 @@ API.service.jct.calculate = (params={}, refresh) ->
     funder_config = API.service.jct.funder_config funder, undefined
 
     # checks to perform for journal
-    _journal_checks = (funder_config) ->
-      journal_checks = []
-      if funder_config.routes? and funder_config.routes
-        for route in funder_config.routes
-          if route in checks and route.calculate? and route.calculate is true
-            journal_checks.push(route)
-      return journal_checks
-    res.request.checks = _journal_checks(funder_config)
+    routes_to_check = []
+    if funder_config.routes? and Object.keys(funder_config.routes).length
+      for route, route_options of funder_config.routes
+        if route of checks and route_options.calculate? and route_options.calculate is true
+          routes_to_check.push(route)
+    res.request.checks = routes_to_check
     cr = {}
     for route, route_method of checks
       cr[route_method] = route in res.request.checks
@@ -397,11 +395,11 @@ API.service.jct.calculate = (params={}, refresh) ->
     # calculate cards
     cards_result = _cards_for_display(funder_config, _results)
     res.cards = cards_result[0]
-    res.compliant = true if cards_result[1]
+    res.compliant = cards_result[1]
 
     delete res.cache if not allcached
     # store a new set of results every time without removing old ones, to keep track of incoming request amounts
-    jct_compliance.insert journal: journal, funder: funder, institution: institution, check_retention: check_retention, rq: rq, checks: checks, compliant: hascompliant, cache: allcached, results: _results
+    jct_compliance.insert journal: journal, funder: funder, institution: institution, check_retention: check_retention, rq: rq, checks: routes_to_check, compliant: hascompliant, cache: allcached, results: _results
     res.results.push(rs) for rs in _results
 
     checked += 1
@@ -1031,6 +1029,7 @@ API.service.jct.funders = (id, refresh) ->
     for e in _funders
       if e.id is id
         return e
+    return false
   return _funders
 
 
