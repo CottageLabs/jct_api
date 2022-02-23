@@ -900,11 +900,11 @@ API.service.jct.sa = (journal, institution, funder, retention=true, sa_prohibiti
 
   # merge the qualifications and logs from SA prohibition into OA.Works permission
   rs.qualifications ?= []
-  if res_sa.qualifications? and res_sa.qualifications.length
+  if res_sa?.qualifications? and res_sa.qualifications.length
     for q in (if _.isArray(res_sa.qualifications) then res_sa.qualifications else [res_sa.qualifications])
       rs.qualifications.push(q)
   rs.log ?= []
-  if res_sa.log? and res_sa.log.length
+  if res_sa?.log? and res_sa.log.length
     for l in (if _.isArray(res_sa.log) then res_sa.log else [res_sa.log])
       rs.log.push(l)
 
