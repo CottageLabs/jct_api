@@ -835,7 +835,7 @@ API.service.jct.sa = (journal, institution, funder) ->
           if 'SA.OABNonCompliant' in log_codes
             r.log.push('SA.NonCompliant')
             r.compliant = 'no'
-          else if 'SA.NotInOAB' in log_codes or 'SA.OABIncomplete'
+          else if 'SA.NotInOAB' in log_codes or 'SA.OABIncomplete' in log_codes
             r.log.push('SA.Unknown')
             r.compliant = 'unknown'
   return rs
