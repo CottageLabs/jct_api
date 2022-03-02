@@ -816,23 +816,28 @@ API.service.jct.sa = (journal, institution, funder) ->
   rs = _merge_logs_and_qa(res_r, rs)
 
   # check for retention
-  if rs
-    _rtn = {}
-    for r in (if _.isArray(rs) then rs else [rs])
-      if r.compliant isnt 'yes'
-        # only check retention if the funder allows it - and only if there IS a funder
-        # funder allows if their rights retention date
-        if journal and funder? and fndr = API.service.jct.funders funder
-          r.funder = funder
-          if fndr.retentionAt? and fndr.retentionAt < Date.now()
-            r.compliant = 'yes'
-            r.log.push code: 'SA.FunderRRActive'
-            # 22022022, as per https://github.com/antleaf/jct-project/issues/503
-            # Add rights retention author qualification
-            r.qualifications ?= []
-            r.qualifications.push({'rights_retention_author_advice': ''})
-          else
-            r.log.push code: 'SA.FunderRRNotActive'
+  for r in (if _.isArray(rs) then rs else [rs])
+    if r.compliant isnt 'yes'
+      # only check retention if the funder allows it - and only if there IS a funder
+      # funder allows if their rights retention date is in the past
+      if journal and funder? and fndr = API.service.jct.funders funder
+        r.funder = funder
+        if fndr.retentionAt? and fndr.retentionAt < Date.now()
+          r.compliant = 'yes'
+          r.log.push code: 'SA.FunderRRActive'
+          # 22022022, as per https://github.com/antleaf/jct-project/issues/503
+          # Add rights retention author qualification
+          r.qualifications ?= []
+          r.qualifications.push({'rights_retention_author_advice': ''})
+        else
+          r.log.push code: 'SA.FunderRRNotActive'
+          log_codes = [l.code for l in r.log]
+          if 'SA.OABNonCompliant' in log_codes
+            r.log.push('SA.NonCompliant')
+            r.compliant = 'no'
+          else if 'SA.NotInOAB' in log_codes or 'SA.OABIncomplete'
+            r.log.push('SA.Unknown')
+            r.compliant = 'unknown'
   return rs
 
 
