@@ -751,7 +751,10 @@ API.service.jct.permission = (issn, institution) ->
       res.log.push code: 'SA.InOAB'
       lc = false
       pbls = [] # have to do these now even if can't archive, because needed for new API code algo values
-      for l in pb.licences ? []
+      possibleLicences = pb.licences ? []
+      if pb.licence
+        possibleLicences.push({type: pb.licence})
+      for l in possibleLicences
         pbls.push l.type
         if lc is false and l.type.toLowerCase().replace(/\-/g,'').replace(/ /g,'') in ['ccby','ccbysa','cc0','ccbynd']
           lc = l.type # set the first but have to keep going for new API codes algo
@@ -764,7 +767,7 @@ API.service.jct.permission = (issn, institution) ->
             if lc
               res.log.push code: 'SA.OABCompliant', parameters: licence: pbls, embargo: (if pb.embargo_months? then [pb.embargo_months] else undefined), version: pb.versions
               res.compliant = 'yes'
-            else if not pb.licences? or pb.licences.length is 0
+            else if not possibleLicences or possibleLicences.length is 0
               res.log.push code: 'SA.OABIncomplete', parameters: missing: ['licences']
               res.compliant = 'unknown'
             else
