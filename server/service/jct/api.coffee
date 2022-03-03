@@ -797,11 +797,11 @@ API.service.jct.sa = (journal, institution, funder, retention=true, sa_prohibiti
 
   # merge the qualifications and logs from SA prohibition into OA.Works permission
   rs.qualifications ?= []
-  if res_sa.qualifications? and res_sa.qualifications.length
+  if res_sa?.qualifications? and res_sa.qualifications.length
     for q in (if _.isArray(res_sa.qualifications) then res_sa.qualifications else [res_sa.qualifications])
       rs.qualifications.push(q)
   rs.log ?= []
-  if res_sa.log? and res_sa.log.length
+  if res_sa?.log? and res_sa.log.length
     for l in (if _.isArray(res_sa.log) then res_sa.log else [res_sa.log])
       rs.log.push(l)
 
@@ -960,7 +960,8 @@ API.service.jct.journals.import = (refresh) ->
     total = 0
     counter = 0
     batch = []
-    while total is 0 or counter < total
+    error_count = 0
+    while (total is 0 or counter < total) and error_count < 11
       if batch.length >= 10000 or (removed and batch.length >= 5000)
         if not removed
           # makes a shorter period of lack of records to query
@@ -1003,6 +1004,7 @@ API.service.jct.journals.import = (refresh) ->
             batch.push rec
         counter += 1000
       catch err
+        error_count += 1
         future = new Future()
         Meteor.setTimeout (() -> future.return()), 2000 # wait 2s on probable crossref downtime
         future.wait()
