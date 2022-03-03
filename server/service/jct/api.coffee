@@ -871,7 +871,10 @@ API.service.jct.hybrid = (issn, institution, funder, oa_permissions) ->
       # get list of licences and matching license condition
       lc = false
       licences = [] # have to do these now even if can't archive, because needed for new API code algo values
-      for l in pb.licences ? []
+      possibleLicences = pb.licences ? []
+      if pb.licence
+        possibleLicences.push({type: pb.licence})
+      for l in possibleLicences
         licences.push l.type
         # TODO: Need to match with funder config
         if lc is false and l.type.toLowerCase().replace(/\-/g,'').replace(/ /g,'') in ['ccby','ccbysa','cc0','ccbynd']
