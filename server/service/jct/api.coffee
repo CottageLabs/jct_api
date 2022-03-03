@@ -966,7 +966,7 @@ API.service.jct.journals.import = (refresh) ->
     counter = 0
     batch = []
     error_count = 0
-    while (total is 0 or counter < total) and error_count < 10
+    while (total is 0 or counter < total) and error_count < 11
       if batch.length >= 10000 or (removed and batch.length >= 5000)
         if not removed
           # makes a shorter period of lack of records to query
