@@ -752,7 +752,7 @@ API.service.jct.permission = (issn, institution) ->
       pb = perms.best_permission
       res.log.push code: 'SA.InOAB'
       lc = false
-      pbls = []
+      pbls = [] # have to do these now even if can't archive, because needed for new API code algo values
       possibleLicences = pb.licences ? []
       if pb.licence
         possibleLicences.push({type: pb.licence})
@@ -767,19 +767,19 @@ API.service.jct.permission = (issn, institution) ->
             try pb.embargo_months = parseInt pb.embargo_months
           if typeof pb.embargo_months isnt 'number' or pb.embargo_months is 0
             if lc
-              res.log.push code: 'SA.OABCompliant', parameters: licence: possibleLicences, embargo: (if pb.embargo_months? then [pb.embargo_months] else undefined), version: pb.versions
+              res.log.push code: 'SA.OABCompliant', parameters: licence: pbls, embargo: (if pb.embargo_months? then [pb.embargo_months] else undefined), version: pb.versions
               res.compliant = 'yes'
             else if not possibleLicences or possibleLicences.length is 0
               res.log.push code: 'SA.OABIncomplete', parameters: missing: ['licences']
               res.compliant = 'unknown'
             else
-              res.log.push code: 'SA.OABNonCompliant', parameters: licence: possibleLicences, embargo: (if pb.embargo_months? then [pb.embargo_months] else undefined), version: pb.versions
+              res.log.push code: 'SA.OABNonCompliant', parameters: licence: pbls, embargo: (if pb.embargo_months? then [pb.embargo_months] else undefined), version: pb.versions
           else
-            res.log.push code: 'SA.OABNonCompliant', parameters: licence: possibleLicences, embargo: (if pb.embargo_months? then [pb.embargo_months] else undefined), version: pb.versions
+            res.log.push code: 'SA.OABNonCompliant', parameters: licence: pbls, embargo: (if pb.embargo_months? then [pb.embargo_months] else undefined), version: pb.versions
         else
-          res.log.push code: 'SA.OABNonCompliant', parameters: licence: possibleLicences, embargo: (if pb.embargo_months? then [pb.embargo_months] else undefined), version: pb.versions
+          res.log.push code: 'SA.OABNonCompliant', parameters: licence: pbls, embargo: (if pb.embargo_months? then [pb.embargo_months] else undefined), version: pb.versions
       else
-        res.log.push code: 'SA.OABNonCompliant', parameters: licence: possibleLicences, embargo: (if pb.embargo_months? then [pb.embargo_months] else undefined), version: pb.versions
+        res.log.push code: 'SA.OABNonCompliant', parameters: licence: pbls, embargo: (if pb.embargo_months? then [pb.embargo_months] else undefined), version: pb.versions
     else
       res.log.push code: 'SA.NotInOAB'
   catch
