@@ -813,7 +813,10 @@ API.service.jct.permission = (issn, institution, perms) ->
       res.log.push code: 'SA.InOAB'
       lc = false
       pbls = [] # have to do these now even if can't archive, because needed for new API code algo values
-      for l in pb.licences ? []
+      possibleLicences = pb.licences ? []
+      if pb.licence
+        possibleLicences.push({type: pb.licence})
+      for l in possibleLicences
         pbls.push l.type
         if lc is false and l.type.toLowerCase().replace(/\-/g,'').replace(/ /g,'') in ['ccby','ccbysa','cc0','ccbynd']
           lc = l.type # set the first but have to keep going for new API codes algo
@@ -826,7 +829,7 @@ API.service.jct.permission = (issn, institution, perms) ->
             if lc
               res.log.push code: 'SA.OABCompliant', parameters: licence: pbls, embargo: (if pb.embargo_months? then [pb.embargo_months] else undefined), version: pb.versions
               res.compliant = 'yes'
-            else if not pb.licences? or pb.licences.length is 0
+            else if not possibleLicences or possibleLicences.length is 0
               res.log.push code: 'SA.OABIncomplete', parameters: missing: ['licences']
               res.compliant = 'unknown'
             else
@@ -901,11 +904,11 @@ API.service.jct.sa = (journal, institution, funder, oa_permissions, check_retent
 
   # merge the qualifications and logs from SA prohibition into OA.Works permission
   rs.qualifications ?= []
-  if res_sa.qualifications? and res_sa.qualifications.length
+  if res_sa?.qualifications? and res_sa.qualifications.length
     for q in (if _.isArray(res_sa.qualifications) then res_sa.qualifications else [res_sa.qualifications])
       rs.qualifications.push(q)
   rs.log ?= []
-  if res_sa.log? and res_sa.log.length
+  if res_sa?.log? and res_sa.log.length
     for l in (if _.isArray(res_sa.log) then res_sa.log else [res_sa.log])
       rs.log.push(l)
 
@@ -1064,7 +1067,7 @@ API.service.jct.journals.import = (refresh) ->
     counter = 0
     batch = []
     error_count = 0
-    while (total is 0 or counter < total) and error_count < 10
+    while (total is 0 or counter < total) and error_count < 11
       if batch.length >= 10000 or (removed and batch.length >= 5000)
         if not removed
           # makes a shorter period of lack of records to query
