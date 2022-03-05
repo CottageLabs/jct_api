@@ -959,17 +959,36 @@ API.service.jct.hybrid = (issn, institution, funder, oa_permissions) ->
     funder: funder
     log: []
 
-  if oa_permissions.best_permission?.issuer?.journal_oa_type?
-    pb = oa_permissions.best_permission
+  # Check DOAJ. If present return non-compliant
+  if issn.length and jct_journal.find 'indoaj:true AND (issn.exact:"' + issn.join('" OR issn.exact:"') + '")'
+    res.compliant = 'no'
+    res.log.push code: 'Hybrid.InDOAJ'
+    return res
+
+  # Not in DOAJ
+  res.log.push code: 'Hybrid.NotInDOAJ'
+
+  # Check if in OAW
+  if not (oa_permissions.best_permission? and oa_permissions.best_permission)
+    res.compliant = 'unknown'
+    res.log.push code: 'Hybrid.NotInOAW'
+    return res
+
+  # In OAW
+  res.log.push code: 'Hybrid.InOAW'
+  pb = oa_permissions.best_permission
+
+  # lookup oa works journal type
+  if pb.issuer?.journal_oa_type?
     journal_type = pb.issuer.journal_oa_type
     if journal_type not in ['hybrid', 'transformative']
       res.compliant = 'no'
-      res.log.push code: 'Hybrid.NotInOAW'
+      res.log.push code: 'Hybrid.NotHybridInOAW'
     else
-      res.log.push code: 'Hybrid.InOAW'
+      res.log.push code: 'Hybrid.HybridInOAW'
       # get list of licences and matching license condition
       lc = false
-      licences = [] # have to do these now even if can't archive, because needed for new API code algo values
+      licences = []
       possibleLicences = pb.licences ? []
       if pb.licence
         possibleLicences.push({type: pb.licence})
@@ -988,7 +1007,7 @@ API.service.jct.hybrid = (issn, institution, funder, oa_permissions) ->
       else
         res.log.push code: 'Hybrid.NonCompliant', parameters: licence: licences
   else
-    res.log.push code: 'Hybrid.Unknown', parameters: missing: ['journal type']
+    res.log.push code: 'Hybrid.OAWTypeUnknown', parameters: missing: ['journal type']
     res.compliant = 'unknown'
   return res
 
@@ -1617,7 +1636,7 @@ API.service.jct.test = (params={}) ->
           got: undefined
           outcome: undefined
           log_codes:
-            expected: _get_val(test['Hybrid log codes'])
+            expected: _get_val(test['Hybrid log codes'], 'array')
             got: undefined
             outcome: undefined
       cards:
@@ -1804,7 +1823,7 @@ API.service.jct.test = (params={}) ->
     query = _get_query_params(test)
     res = _initialise_result(test)
     console.log('Doing test ' + res.id)
-    if query.issn and query.funder and query.ror
+    if query.issn and query.funder # ror can be empty
       output = API.service.jct.calculate {funder: query.funder, issn: query.issn, ror: query.ror}
       for match in ['funder', 'journal', 'institution']
         _match_query(match, output, res)
