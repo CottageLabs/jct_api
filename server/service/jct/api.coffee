@@ -809,6 +809,7 @@ API.service.jct.permission = (issn, institution, perms) ->
     if not perms.all_permissions? or perms.all_permissions.length is 0
       res.log.push code: 'SA.NotInOAB'
     else
+      res.log.push code: 'SA.InOAB'
       # gather values from permission
       _gather_values = (permission) =>
         # initialise values to be gathered
