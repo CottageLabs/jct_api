@@ -9,6 +9,7 @@ import unidecode from 'unidecode'
 import csvtojson from 'csvtojson'
 import jsYaml from 'js-yaml'
 import { Match } from 'meteor/check'
+import AdmZip from "adm-zip"
 import stream from 'stream'
 
 '''
@@ -49,10 +50,9 @@ funders will be a list given to us by JCT detailing their particular requirement
 # NOTE: doing this would mean live would not have recent data to read from, so after this code change is deployed to live 
 # it should be followed by manually triggering a full import on live
 # (for convenience the settings have initially been set up to only run import on dev as well, to make the most 
-# of the dev machine and minimise any potential memory or CPU intense work on the live machine - see the settings.json file for this config)
-
+# of the dev machine and minimise any potential memory or CPU intense work 
 index_name = API.settings.es.index ? 'jct'
-@jct_institution = new API.collection {index:index_name, type:"institution", devislive: true}
+jct_institution = new API.collection {index:index_name, type:"institution"}
 jct_journal = new API.collection {index:index_name, type:"journal"}
 jct_agreement = new API.collection {index:index_name, type:"agreement"}
 jct_compliance = new API.collection {index:index_name, type:"compliance"}
@@ -152,6 +152,10 @@ API.add 'service/jct/unknown/:start/:end',
 
 API.add 'service/jct/journal', get: () -> return jct_journal.search this.queryParams
 API.add 'service/jct/institution', get: () -> return jct_institution.search this.queryParams
+API.add 'service/jct/institution/:iid', get: () -> return API.service.jct.institution this.urlParams.iid
+API.add 'service/jct/institution/import', get: () ->
+  Meteor.setTimeout (() => API.service.jct.institution undefined, true), 1
+  return true
 API.add 'service/jct/compliance', get: () -> return jct_compliance.search this.queryParams
 # the results that have already been calculated. These used to get used to re-serve as a 
 # faster cached result, but uncertainties over agreement on how long to cache stuff made 
@@ -194,7 +198,6 @@ API.service.jct.suggest.funder = (str, from, size) ->
   return total: res.length, data: res
 
 API.service.jct.suggest.institution = (str, from, size) ->
-  # TODO add an import method from wikidata or ROR, and have the usual import routine check for changes on a suitable schedule
   if typeof str is 'string' and str.length is 9 and rec = jct_institution.get str
     delete rec[x] for x in ['createdAt', 'created_date', '_id', 'description', 'values', 'wid']
     return total: 1, data: [rec]
@@ -305,8 +308,6 @@ API.service.jct.calculate = (params={}, refresh) ->
     'tj': 'tj',
     'hybrid': 'hybrid'
   }
-  check_retention = true
-  check_sa_prohibition = true
 
   # initialise basic result object
   res =
@@ -368,7 +369,7 @@ API.service.jct.calculate = (params={}, refresh) ->
       allcached = false
       Meteor.setTimeout () ->
         if route_method is 'sa'
-          rs = API.service.jct.sa (issnsets[journal] ? journal), (if institution? then institution else undefined), funder, oa_permissions, check_retention, check_sa_prohibition
+          rs = API.service.jct.sa (issnsets[journal] ? journal), (if institution? then institution else undefined), funder, oa_permissions
         else if route_method is 'hybrid'
           rs =  API.service.jct.hybrid (issnsets[journal] ? journal), (if institution? then institution else undefined), funder, oa_permissions
         else
@@ -399,7 +400,7 @@ API.service.jct.calculate = (params={}, refresh) ->
 
     delete res.cache if not allcached
     # store a new set of results every time without removing old ones, to keep track of incoming request amounts
-    jct_compliance.insert journal: journal, funder: funder, institution: institution, check_retention: check_retention, rq: rq, checks: routes_to_check, compliant: hascompliant, cache: allcached, results: _results
+    jct_compliance.insert journal: journal, funder: funder, institution: institution, rq: rq, checks: routes_to_check, compliant: hascompliant, cache: allcached, results: _results
     res.results.push(rs) for rs in _results
 
     checked += 1
@@ -769,20 +770,18 @@ API.service.jct.retention = (issn, refresh) ->
   if issn
     issn = [issn] if typeof issn is 'string'
     res =
-      route: 'retention' # this is actually only used as a subset of OAB permission self_archiving so far
-      compliant: 'yes' # if not present then compliant but with author and funder quals - so what are the default funder quals?
-      qualifications: [{'rights_retention_author_advice': ''}]
+      route: 'self_archiving'
+      compliant: 'unknown'
       issn: issn
       log: []
 
     if exists = jct_journal.find 'retained:true AND (issn.exact:"' + issn.join('" OR issn.exact:"') + '")'
       # https://github.com/antleaf/jct-project/issues/406 no qualification needed if retained is true. Position not used.
-      delete res.qualifications
+      res.compliant = 'yes'
       res.log.push code: 'SA.Compliant'
     else
-      # new log code algo states there should be an SA.Unknown, but given we default to 
-      # compliant at the moment, I don't see a way to achieve that, so set as Compliant for now
-      res.log.push(code: 'SA.Compliant') if res.log.length is 0
+      # 22-02-2022 - as per algorithm https://github.com/antleaf/jct-project/issues/503
+      res.log.push code: 'SA.NotAsserted'
     return res
   else
     return jct_journal.count 'retained:true'
@@ -807,41 +806,139 @@ API.service.jct.permission = (issn, institution, perms) ->
     log: []
 
   try
-    if perms.best_permission?
-      res.compliant = 'no' # set to no until a successful route through is found
-      pb = perms.best_permission
-      res.log.push code: 'SA.InOAB'
-      lc = false
-      pbls = [] # have to do these now even if can't archive, because needed for new API code algo values
-      possibleLicences = pb.licences ? []
-      if pb.licence
-        possibleLicences.push({type: pb.licence})
-      for l in possibleLicences
-        pbls.push l.type
-        if lc is false and l.type.toLowerCase().replace(/\-/g,'').replace(/ /g,'') in ['ccby','ccbysa','cc0','ccbynd']
-          lc = l.type # set the first but have to keep going for new API codes algo
-      if pb.can_archive
-        if 'postprint' in pb.versions or 'publisher pdf' in pb.versions or 'acceptedVersion' in pb.versions or 'publishedVersion' in pb.versions
-          # and Embargo is zero
-          if typeof pb.embargo_months is 'string'
-            try pb.embargo_months = parseInt pb.embargo_months
-          if typeof pb.embargo_months isnt 'number' or pb.embargo_months is 0
-            if lc
-              res.log.push code: 'SA.OABCompliant', parameters: licence: pbls, embargo: (if pb.embargo_months? then [pb.embargo_months] else undefined), version: pb.versions
-              res.compliant = 'yes'
-            else if not possibleLicences or possibleLicences.length is 0
-              res.log.push code: 'SA.OABIncomplete', parameters: missing: ['licences']
-              res.compliant = 'unknown'
-            else
-              res.log.push code: 'SA.OABNonCompliant', parameters: licence: pbls, embargo: (if pb.embargo_months? then [pb.embargo_months] else undefined), version: pb.versions
-          else
-            res.log.push code: 'SA.OABNonCompliant', parameters: licence: pbls, embargo: (if pb.embargo_months? then [pb.embargo_months] else undefined), version: pb.versions
-        else
-          res.log.push code: 'SA.OABNonCompliant', parameters: licence: pbls, embargo: (if pb.embargo_months? then [pb.embargo_months] else undefined), version: pb.versions
-      else
-        res.log.push code: 'SA.OABNonCompliant', parameters: licence: pbls, embargo: (if pb.embargo_months? then [pb.embargo_months] else undefined), version: pb.versions
-    else
+    permsurl = 'https://api.openaccessbutton.org/permissions?meta=false&issn=' + (if typeof issn is 'string' then issn else issn.join(',')) + (if typeof institution is 'string' then '&ror=' + institution else if institution? and Array.isArray(institution) and institution.length then '&ror=' + institution.join(',') else '')
+    perms = HTTP.call('GET', permsurl, {timeout:3000}).data
+    if not perms.all_permissions? or perms.all_permissions.length is 0
       res.log.push code: 'SA.NotInOAB'
+    else
+      # gather values from permission
+      _gather_values = (permission) =>
+        # initialise values to be gathered
+        values =
+          licences: [],
+          versions: undefined,
+          embargo: undefined,
+          planS: undefined,
+          score: undefined,
+          compliant: 'no'
+        # licences - get all license types
+        if permission.licences? and permission.licences.length
+          for l in permission.licences ? []
+            values.licences.push l.type
+        # versions
+        if permission.versions? and permission.versions.length
+          values.versions = permission.versions
+        # embargo
+        if permission.embargo_months?
+          if typeof permission.embargo_months is 'string'
+            try permission.embargo_months = parseInt permission.embargo_months
+          values.embargo = [permission.embargo_months]
+        # planS compliant funder
+        if permission.requirements?.funder? and permission.requirements.funder.length and 'Plan S' in permission.requirements.funder
+          values.planS = true
+        # score
+        if permission.score?
+          values.score = permission.score
+          if typeof values.score is 'string'
+            try values.score = parseInt values.score
+        return values
+
+      # gather outcome of individual checks for permission
+      _gather_checks = (permission) =>
+        checks =
+          archive: undefined,
+          version: undefined,
+          requirements: undefined,
+          embargo: undefined,
+          matched_license: undefined,
+          license: undefined
+
+        # Perform each of the checks
+        # archive - check if permission allows archiving
+        checks.archive = if permission.can_archive then true else false
+        # version - check for acceptable version
+        checks.version = if 'postprint' in permission.versions or 'publisher pdf' in permission.versions or 'acceptedVersion' in permission.versions or 'publishedVersion' in permission.versions then true else false
+        # requirements - check if there is no requirement or requirement matches Plan S
+        if permission.requirements?
+          if permission.requirements.funder? and permission.requirements.funder.length and 'Plan S' in permission.requirements.funder
+            checks.requirements = true
+          else
+            checks.requirements = false
+        else
+          checks.requirements = true
+        # check if embargo is 0 (if integer value)
+        if permission.embargo_months?
+          if typeof permission.embargo_months isnt 'number' or permission.embargo_months is 0
+            checks.embargo = true
+          else
+            checks.embargo = false
+        else
+          checks.embargo = true
+        # matched_license - get first matching license
+        if permission.licences? and permission.licences.length
+          for l in permission.licences ? []
+            if checks.matched_license is undefined and l.type.toLowerCase().replace(/\-/g,'').replace(/ /g,'') in ['ccby','ccbysa','cc0','ccbynd']
+              checks.matched_license = l.type
+        # license - check for matching license or missing license
+        if checks.matched_license or not permission.licences? or permission.licences.length is 0
+          checks.license = true
+        return checks
+
+      # get best permission based on score
+      _best_permission = (list_of_values) =>
+        if not list_of_values or list_of_values.length is 0
+          return undefined
+        best_score = 0
+        selected_value = undefined
+        for value in list_of_values
+          if value.score? and typeof value.score is 'number' and value.score > best_score
+            best_score = value.score
+            selected_value = value
+        if not selected_value
+          selected_value = list_of_values[0]
+        return selected_value
+
+      # evaluate each permission from OA works
+      oa_check =
+        OABCompliant: [],
+        OABIncomplete: [],
+        OABNonCompliant: []
+      for permission in perms.all_permissions
+        p_values = _gather_values(permission)
+        p_checks = _gather_checks(permission)
+        if p_checks.archive and \
+          p_checks.requirements and \
+          p_checks.version and \
+          p_checks.embargo and \
+          p_checks.license
+          if p_checks.matched_license
+            p_values.compliant = 'yes'
+            oa_check.OABCompliant.push(p_values)
+          else
+            p_values.compliant = 'unknown'
+            p_values.missing = ['licences']
+            oa_check.OABIncomplete.push(p_values)
+        else
+          oa_check.OABNonCompliant.push(p_values)
+
+      # return best result
+      pb = undefined
+      if oa_check.OABCompliant.length
+        pb = _best_permission(oa_check.OABCompliant)
+        res.compliant = pb.compliant
+        res.log.push code: 'SA.OABCompliant', parameters: licence: pb.licences, embargo: pb.embargo, version: pb.versions
+        # ToDo - if planS in pb, do we need to add a qualification?
+      else if oa_check.OABIncomplete.length
+        pb = _best_permission(oa_check.OABIncomplete)
+        res.compliant = pb.compliant
+        res.log.push code: 'SA.OABIncomplete', parameters: missing: pb.missing
+      else if oa_check.OABNonCompliant.length
+        pb = _best_permission(oa_check.OABNonCompliant)
+        res.compliant = pb.compliant
+        res.log.push code: 'SA.OABNonCompliant', parameters: licence: pb.licences, embargo: pb.embargo, version: pb.versions
+      else
+        res.compliant = 'unknown'
+        res.log.push code: 'SA.OABIncomplete', parameters: missing: ['licences']
   catch
     # Fixme: if we don't get an answer then we don't have the info, but this may not be strictly what we want.
     res.log.push code: 'SA.OABIncomplete', parameters: missing: ['licences']
@@ -895,51 +992,61 @@ API.service.jct.hybrid = (issn, institution, funder, oa_permissions) ->
 
 
 # Calculate self archiving check. It combines, sa_prohibited, OA.works permission and rr checks
-API.service.jct.sa = (journal, institution, funder, oa_permissions, check_retention=true, check_sa_prohibition=true) ->
-  # Get SA prohibition
-  if journal and check_sa_prohibition
-    res_sa = API.service.jct.sa_prohibited journal, undefined
-    if res_sa and res_sa.compliant is 'no'
-      return res_sa
+API.service.jct.sa = (journal, institution, funder, oa_permissions) ->
+
+  _merge_logs_and_qa= (res1, res2) ->
+    # merge the qualifications and logs from res1 into res2
+    res2.qualifications ?= []
+    if res1.qualifications? and res1.qualifications.length
+      for q in (if _.isArray(res1.qualifications) then res1.qualifications else [res1.qualifications])
+        res2.qualifications.push(q)
+    res2.log ?= []
+    if res1.log? and res1.log.length
+      for l in (if _.isArray(res1.log) then res1.log else [res1.log])
+        res2.log.push(l)
+    return res2
+
+  # Check SA prohibition
+  res_sa = API.service.jct.sa_prohibited journal, undefined
+  if res_sa and res_sa.compliant is 'no'
+    return res_sa
+
+  # Get rights retention data
+  res_r = API.service.jct.retention journal, undefined
+  # merge the qualifications and logs from SA prohibition
+  res_r = _merge_logs_and_qa(res_sa, res_r)
+  if res_r.compliant is 'yes'
+    return res_r
 
   # Get OA.Works permission
   rs = API.service.jct.permission journal, institution, oa_permissions
 
-  # merge the qualifications and logs from SA prohibition into OA.Works permission
-  rs.qualifications ?= []
-  if res_sa?.qualifications? and res_sa.qualifications.length
-    for q in (if _.isArray(res_sa.qualifications) then res_sa.qualifications else [res_sa.qualifications])
-      rs.qualifications.push(q)
-  rs.log ?= []
-  if res_sa?.log? and res_sa.log.length
-    for l in (if _.isArray(res_sa.log) then res_sa.log else [res_sa.log])
-      rs.log.push(l)
+  # merge the qualifications and logs from SA prohibition and SA rights retention into OA.Works permission
+  rs = _merge_logs_and_qa(res_r, rs)
 
   # check for retention
-  if rs
-    _rtn = {}
-    for r in (if _.isArray(rs) then rs else [rs])
-      if r.compliant isnt 'yes' and check_retention
-        # only check retention if the funder allows it - and only if there IS a funder
-        # funder allows if their rights retention date
-        if journal and funder? and fndr = API.service.jct.funders funder
-          r.funder = funder
-          # if retentionAt is in past - active - https://github.com/antleaf/jct-project/issues/437
-          if fndr.retentionAt? and fndr.retentionAt < Date.now()
-            r.log.push code: 'SA.FunderRRActive'
-            # 26032021, as per https://github.com/antleaf/jct-project/issues/380
-            # rights retention qualification disabled
-            #r.qualifications ?= []
-            #r.qualifications.push 'rights_retention_funder_implementation': funder: funder, date: moment(fndr.retentionAt).format 'YYYY-MM-DD'
-            # retention is a special case on permissions, done this way so can be easily disabled for testing
-            _rtn[journal] ?= API.service.jct.retention journal
-            r.compliant = _rtn[journal].compliant
-            r.log.push(lg) for lg in _rtn[journal].log
-            if _rtn[journal].qualifications? and _rtn[journal].qualifications.length
-              r.qualifications ?= []
-              r.qualifications.push(ql) for ql in _rtn[journal].qualifications
-          else
-            r.log.push code: 'SA.FunderRRNotActive'
+  for r in (if _.isArray(rs) then rs else [rs])
+    if r.compliant isnt 'yes'
+      # only check retention if the funder allows it - and only if there IS a funder
+      # funder allows if their rights retention date is in the past
+      if journal and funder? and fndr = API.service.jct.funders funder
+        r.funder = funder
+        if fndr.retentionAt? and fndr.retentionAt < Date.now()
+          r.compliant = 'yes'
+          r.log.push code: 'SA.FunderRRActive'
+          # 22022022, as per https://github.com/antleaf/jct-project/issues/503
+          # Add rights retention author qualification
+          r.qualifications ?= []
+          r.qualifications.push({'rights_retention_author_advice': ''})
+        else
+          r.log.push code: 'SA.FunderRRNotActive'
+          log_codes = [l.code for l in r.log]
+          if 'SA.OABNonCompliant' in log_codes
+            r.log.push('SA.NonCompliant')
+            r.compliant = 'no'
+          else if 'SA.NotInOAB' in log_codes or 'SA.OABIncomplete' in log_codes
+            r.log.push('SA.Unknown')
+            r.compliant = 'unknown'
   return rs
 
 
@@ -1220,6 +1327,11 @@ API.service.jct.import = (refresh) ->
     res.funders = res.funders.length if _.isArray res.funders
     console.log 'JCT import funders complete'
 
+    # Institution data does not change regularly
+    # console.log 'Starting institution (ror) import'
+    # API.service.jct.institution.import()
+    # console.log 'JCT import institution (ror) complete'
+
     console.log 'Starting TAs data import'
     res.ta = API.service.jct.ta.import false # this is the slowest, takes about twenty minutes
     console.log 'JCT import TAs complete'
@@ -1339,6 +1451,7 @@ API.service.jct.csv = (rows) ->
 API.service.jct.csv2json = Async.wrap (content, callback) ->
   content = HTTP.call('GET', content).content if content.indexOf('http') is 0
   csvtojson().fromString(content).then (result) -> return callback null, result
+
 
 API.service.jct.table2json = (content) ->
   content = HTTP.call('GET', content).content if content.indexOf('http') is 0 # TODO need to try this without puppeteer
@@ -1892,3 +2005,72 @@ _cards_for_display = (funder_config, results) ->
       sorted_cards = cards
 
   return [sorted_cards, is_compliant]
+
+# return the institution for an id. Import the data if refresh is true
+API.service.jct.institution = (id, refresh) ->
+  if refresh
+    console.log('Got refresh - importing institution (ror)')
+    Meteor.setTimeout (() => API.service.jct.institution.import()), 1
+    return true
+  if id
+    rec = jct_institution.find 'id.exact:"' + id.toLowerCase().trim() + '"'
+    if rec
+      return rec
+    return {}
+  else
+    return total: jct_institution.count()
+
+# import institution data from ror
+API.service.jct.institution.import = () ->
+  _set_id = (rec) ->
+    ror = rec.id
+    id = ror.replace("https://ror.org/", '')
+    rec.id = id
+    rec.ror = id
+    rec.ror_id = ror
+    return rec
+
+  _set_title = (rec) ->
+    rec.title = rec.name
+    return rec
+
+  # Download zip file from github containing data dump of RoR
+  fldr = '/tmp/jct_ror' + (if API.settings.dev then '_dev' else '') + '/'
+  if fs.existsSync fldr
+    fs.rmdirSync(fldr, { recursive: true });
+  fs.mkdirSync fldr
+  filepath = fldr + 'ror.zip'
+  ror_data_dump_url = 'https://github.com/ror-community/ror-api/raw/master/rorapi/data/ror-2021-09-23/ror.zip'
+  fs.writeFileSync filepath, HTTP.call('GET', ror_data_dump_url, {npmRequestOptions:{encoding:null}}).content
+  console.log 'Importing from ROR data dump ' + fldr + 'ror.zip'
+  zip = AdmZip(filepath)
+  zip.extractEntryTo("ror.json", fldr)
+
+  # Remove old data and index new
+  removed = false
+  batch = []
+  counter = 1
+  imports = 0
+  for rec in JSON.parse fs.readFileSync fldr + 'ror.json'
+    if batch.length >= 20000
+      if not removed
+        console.log 'Removing old institution records'
+        jct_institution.remove '*'
+        future = new Future()
+        Meteor.setTimeout (() -> future.return()), 10000
+        future.wait()
+        removed = true
+      console.log 'Importing RoR batch ' + counter
+      jct_institution.insert batch
+      counter += 1
+      batch = []
+    rec = _set_id(rec)
+    rec = _set_title(rec)
+    batch.push rec
+    imports += 1
+  if batch.length
+    console.log 'Importing RoR batch ' + counter
+    jct_institution.insert batch
+    batch = []
+  console.log('Completed importing ror data ', imports)
+

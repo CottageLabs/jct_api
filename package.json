@@ -14,6 +14,7 @@
   "homepage": "https://github.com/CottageLabs/jct_api#readme",
   "dependencies": {
     "@babel/runtime": "^7.14.0",
+    "adm-zip": "^0.5.9",
     "body-parser": "^1.19.0",
     "connect": "^3.7.0",
     "connect-route": "^0.1.5",
@@ -24,6 +25,5 @@
     "moment": "^2.29.1",
     "tar": "^6.1.9",
     "unidecode": "^0.1.8"
-  },
-  "devDependencies": {}
+  }
 }
