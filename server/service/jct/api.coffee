@@ -806,8 +806,6 @@ API.service.jct.permission = (issn, institution, perms) ->
     log: []
 
   try
-    permsurl = 'https://api.openaccessbutton.org/permissions?meta=false&issn=' + (if typeof issn is 'string' then issn else issn.join(',')) + (if typeof institution is 'string' then '&ror=' + institution else if institution? and Array.isArray(institution) and institution.length then '&ror=' + institution.join(',') else '')
-    perms = HTTP.call('GET', permsurl, {timeout:3000}).data
     if not perms.all_permissions? or perms.all_permissions.length is 0
       res.log.push code: 'SA.NotInOAB'
     else
