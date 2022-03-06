@@ -47,11 +47,13 @@ funders will be a list given to us by JCT detailing their particular requirement
 # it should be followed by manually triggering a full import on live
 # (for convenience the settings have initially been set up to only run import on dev as well, to make the most 
 # of the dev machine and minimise any potential memory or CPU intense work on the live machine - see the settings.json file for this config)
-@jct_institution = new API.collection {index:"jct", type:"institution", devislive: true}
-jct_journal = new API.collection {index:"jct", type:"journal"}
-jct_agreement = new API.collection {index:"jct", type:"agreement"}
-jct_compliance = new API.collection {index:"jct", type:"compliance"}
-jct_unknown = new API.collection {index:"jct", type:"unknown"}
+
+index_name = API.settings.es.index ? 'jct'
+@jct_institution = new API.collection {index:index_name, type:"institution", devislive: true}
+jct_journal = new API.collection {index:index_name, type:"journal"}
+jct_agreement = new API.collection {index:index_name, type:"agreement"}
+jct_compliance = new API.collection {index:index_name, type:"compliance"}
+jct_unknown = new API.collection {index:index_name, type:"unknown"}
 
 
 # define endpoints that the JCT requires (to be served at a dedicated domain)
@@ -267,7 +269,7 @@ API.service.jct.suggest.journal = (str, from, size) ->
   return total: res?.hits?.total ? 0, data: _.union starts.sort((a, b) -> return a.title.length - b.title.length), extra.sort((a, b) -> return a.title.length - b.title.length)
 
 
-API.service.jct.calculate = (params={}, refresh, checks=['sa', 'doaj', 'ta', 'tj'], retention=true, sa_prohibition=true) ->
+API.service.jct.calculate = (params={}, refresh, checks=['sa', 'doaj', 'ta', 'tj']) ->
   # given funder(s), journal(s), institution(s), find out if compliant or not
   # note could be given lists of each - if so, calculate all and return a list
   if params.issn
@@ -279,7 +281,6 @@ API.service.jct.calculate = (params={}, refresh, checks=['sa', 'doaj', 'ta', 'tj
   refresh ?= params.refresh if params.refresh?
   if params.checks?
     checks = if typeof params.checks is 'string' then params.checks.split(',') else params.checks
-  retention = params.retention if params.retention?
 
   res =
     request:
@@ -290,7 +291,6 @@ API.service.jct.calculate = (params={}, refresh, checks=['sa', 'doaj', 'ta', 'tj
       funder: []
       institution: []
       checks: checks
-      retention: retention
     compliant: false
     cache: true
     results: []
@@ -323,7 +323,7 @@ API.service.jct.calculate = (params={}, refresh, checks=['sa', 'doaj', 'ta', 'tj
       allcached = false
       Meteor.setTimeout () ->
         if which is 'sa'
-          rs = API.service.jct.sa (issnsets[journal] ? journal), (if institution? then institution else undefined), funder, retention, sa_prohibition
+          rs = API.service.jct.sa (issnsets[journal] ? journal), (if institution? then institution else undefined), funder
         else
           rs = API.service.jct[which] (issnsets[journal] ? journal), (if institution? and which is 'ta' then institution else undefined)
         if rs
@@ -344,7 +344,7 @@ API.service.jct.calculate = (params={}, refresh, checks=['sa', 'doaj', 'ta', 'tj
     res.compliant = true if hascompliant
     delete res.cache if not allcached
     # store a new set of results every time without removing old ones, to keep track of incoming request amounts
-    jct_compliance.insert journal: journal, funder: funder, institution: institution, retention: retention, rq: rq, checks: checks, compliant: hascompliant, cache: allcached, results: _results
+    jct_compliance.insert journal: journal, funder: funder, institution: institution, rq: rq, checks: checks, compliant: hascompliant, cache: allcached, results: _results
     res.results.push(rs) for rs in _results
 
     checked += 1
@@ -712,20 +712,18 @@ API.service.jct.retention = (issn, refresh) ->
   if issn
     issn = [issn] if typeof issn is 'string'
     res =
-      route: 'retention' # this is actually only used as a subset of OAB permission self_archiving so far
-      compliant: 'yes' # if not present then compliant but with author and funder quals - so what are the default funder quals?
-      qualifications: [{'rights_retention_author_advice': ''}]
+      route: 'self_archiving'
+      compliant: 'unknown'
       issn: issn
       log: []
 
     if exists = jct_journal.find 'retained:true AND (issn.exact:"' + issn.join('" OR issn.exact:"') + '")'
       # https://github.com/antleaf/jct-project/issues/406 no qualification needed if retained is true. Position not used.
-      delete res.qualifications
+      res.compliant = 'yes'
       res.log.push code: 'SA.Compliant'
     else
-      # new log code algo states there should be an SA.Unknown, but given we default to 
-      # compliant at the moment, I don't see a way to achieve that, so set as Compliant for now
-      res.log.push(code: 'SA.Compliant') if res.log.length is 0
+      # 22-02-2022 - as per algorithm https://github.com/antleaf/jct-project/issues/503
+      res.log.push code: 'SA.NotAsserted'
     return res
   else
     return jct_journal.count 'retained:true'
@@ -788,53 +786,61 @@ API.service.jct.permission = (issn, institution) ->
 
 
 # Calculate self archiving check. It combines, sa_prohibited, OA.works permission and rr checks
-API.service.jct.sa = (journal, institution, funder, retention=true, sa_prohibition=true) ->
-  # Get SA prohibition
-  if journal and sa_prohibition
-    res_sa = API.service.jct.sa_prohibited journal, undefined
-    if res_sa and res_sa.compliant is 'no'
-      return res_sa
+API.service.jct.sa = (journal, institution, funder) ->
+
+  _merge_logs_and_qa= (res1, res2) ->
+    # merge the qualifications and logs from res1 into res2
+    res2.qualifications ?= []
+    if res1.qualifications? and res1.qualifications.length
+      for q in (if _.isArray(res1.qualifications) then res1.qualifications else [res1.qualifications])
+        res2.qualifications.push(q)
+    res2.log ?= []
+    if res1.log? and res1.log.length
+      for l in (if _.isArray(res1.log) then res1.log else [res1.log])
+        res2.log.push(l)
+    return res2
+
+  # Check SA prohibition
+  res_sa = API.service.jct.sa_prohibited journal, undefined
+  if res_sa and res_sa.compliant is 'no'
+    return res_sa
+
+  # Get rights retention data
+  res_r = API.service.jct.retention journal, undefined
+  # merge the qualifications and logs from SA prohibition
+  res_r = _merge_logs_and_qa(res_sa, res_r)
+  if res_r.compliant is 'yes'
+    return res_r
 
   # Get OA.Works permission
   rs = API.service.jct.permission journal, institution
 
-  # merge the qualifications and logs from SA prohibition into OA.Works permission
-  rs.qualifications ?= []
-  if res_sa?.qualifications? and res_sa.qualifications.length
-    for q in (if _.isArray(res_sa.qualifications) then res_sa.qualifications else [res_sa.qualifications])
-      rs.qualifications.push(q)
-  rs.log ?= []
-  if res_sa?.log? and res_sa.log.length
-    for l in (if _.isArray(res_sa.log) then res_sa.log else [res_sa.log])
-      rs.log.push(l)
+  # merge the qualifications and logs from SA prohibition and SA rights retention into OA.Works permission
+  rs = _merge_logs_and_qa(res_r, rs)
 
   # check for retention
-  if rs
-    _rtn = {}
-    for r in (if _.isArray(rs) then rs else [rs])
-      if r.compliant isnt 'yes' and retention
-        # only check retention if the funder allows it - and only if there IS a funder
-        # funder allows if their rights retention date
-        if journal and funder? and fndr = API.service.jct.funders funder
-          r.funder = funder
-          # 1609459200000 = Wed Sep 25 52971
-          # if fndr.retentionAt? and (fndr.retentionAt is 1609459200000 or fndr.retentionAt >= Date.now())
-          # if retentionAt is in past - active - https://github.com/antleaf/jct-project/issues/437
-          if fndr.retentionAt? and fndr.retentionAt < Date.now()
-            r.log.push code: 'SA.FunderRRActive'
-            # 26032021, as per https://github.com/antleaf/jct-project/issues/380
-            # rights retention qualification disabled
-            #r.qualifications ?= []
-            #r.qualifications.push 'rights_retention_funder_implementation': funder: funder, date: moment(fndr.retentionAt).format 'YYYY-MM-DD'
-            # retention is a special case on permissions, done this way so can be easily disabled for testing
-            _rtn[journal] ?= API.service.jct.retention journal
-            r.compliant = _rtn[journal].compliant
-            r.log.push(lg) for lg in _rtn[journal].log
-            if _rtn[journal].qualifications? and _rtn[journal].qualifications.length
-              r.qualifications ?= []
-              r.qualifications.push(ql) for ql in _rtn[journal].qualifications
-          else
-            r.log.push code: 'SA.FunderRRNotActive'
+  for r in (if _.isArray(rs) then rs else [rs])
+    if r.compliant isnt 'yes'
+      # only check retention if the funder allows it - and only if there IS a funder
+      # funder allows if their rights retention date is in the past
+      if journal and funder? and fndr = API.service.jct.funders funder
+        r.funder = funder
+        if fndr.retentionAt? and fndr.retentionAt < Date.now()
+          r.compliant = 'yes'
+          r.log.push code: 'SA.FunderRRActive'
+          # 22022022, as per https://github.com/antleaf/jct-project/issues/503
+          # Add rights retention author qualification
+          r.qualifications ?= []
+          r.qualifications.push({'rights_retention_author_advice': ''})
+        else
+          r.log.push code: 'SA.FunderRRNotActive'
+          log_codes = [l.code for l in r.log]
+          if 'SA.OABNonCompliant' in log_codes
+            r.log.push('SA.NonCompliant')
+            r.compliant = 'no'
+          else if 'SA.NotInOAB' in log_codes or 'SA.OABIncomplete' in log_codes
+            r.log.push('SA.Unknown')
+            r.compliant = 'unknown'
   return rs
 
 
@@ -1014,7 +1020,9 @@ API.service.jct.journals.import = (refresh) ->
     if batch.length
       jct_journal.insert batch
       batch = []
-    
+    if error_count >= 10
+      console.log 'Crossref import had ' + error_count + ' errors. Backing off. Imported ' + batch.length + ' of ' + total + ' records.'
+
     # then load the DOAJ data from the file (crossref takes priority because it has better metadata for spotting discontinuations)
     # only about 20% of the ~15k are not already in crossref, so do updates then bulk load the new ones
     console.log 'Importing from DOAJ journal dump ' + current
@@ -1083,8 +1091,10 @@ API.service.jct.journals.import = (refresh) ->
   
 
 API.service.jct.import = (refresh) ->
-  res = previously: jct_journal.count(), presently: undefined, started: Date.now()
-  res.newest = jct_agreement.find '*', true
+  res = {}
+  if jct_journal
+    res = previously: jct_journal.count(), presently: undefined, started: Date.now()
+    res.newest = jct_agreement.find '*', true
   if refresh or res.newest?.createdAt < Date.now()-86400000
     # run all imports necessary for up to date data
     console.log 'Starting JCT imports'
@@ -1133,12 +1143,13 @@ API.service.jct.import = (refresh) ->
 _jct_import = () ->
   try API.service.jct.funders undefined, true # get the funders at startup
   if API.settings.service?.jct?.import isnt false # so defaults to run if not set to false in settings
-    console.log 'Setting up a daily import check which will run an import if it is a Saturday'
+    console.log 'Setting up a daily import check which will run an import if it is day ' + API.settings.service.jct.import_day
     # if later updates are made to run this on a cluster again, make sure that only one server runs this (e.g. use the import setting above where necessary)
     Meteor.setInterval () ->
       today = new Date()
-      if today.getDay() is 6 # if today is a Saturday run an import
-        console.log 'Starting Saturday import'
+      if today.getDay() is API.settings.service.jct.import_day
+        # if import_day number matches, run import. Days are numbered 0 to 6, Sun to Sat
+        console.log 'Starting day ' + API.settings.service.jct.import_day + ' import'
         API.service.jct.import()
     , 86400000
 Meteor.setTimeout _jct_import, 5000
@@ -1169,7 +1180,7 @@ API.service.jct.unknown = (res, funder, journal, institution, send) ->
       else
         q = '*'
       last = false
-      for un in jct_unknown.fetch q, {newest: false}
+      for un in (jct_unknown.fetch q, {newest: false})
         start = un.createdAt if start is false
         end = un.createdAt
         last = un
@@ -1411,7 +1422,7 @@ API.service.jct.test = (params={}) ->
             ans.discovered[if k is 'journal' then 'issn' else if k is 'institution' then 'ror' else 'funder'].push API.service.jct.suggest[k](j).data[0].id
           catch
             console.log k, j
-      ans.result = API.service.jct.calculate {funder: ans.discovered.funder, issn: ans.discovered.issn, ror: ans.discovered.ror}, params.refresh, params.checks, params.retention, params.sa_prohibition
+      ans.result = API.service.jct.calculate {funder: ans.discovered.funder, issn: ans.discovered.issn, ror: ans.discovered.ror}, params.refresh, params.checks
       ans.pass = queries[q].test ans.result
       if ans.pass isnt true
         res.pass = false
