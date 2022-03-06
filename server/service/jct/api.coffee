@@ -791,11 +791,11 @@ API.service.jct.sa = (journal, institution, funder) ->
   _merge_logs_and_qa= (res1, res2) ->
     # merge the qualifications and logs from res1 into res2
     res2.qualifications ?= []
-    if res1.qualifications? and res1.qualifications.length
+    if res1?.qualifications? and res1.qualifications.length
       for q in (if _.isArray(res1.qualifications) then res1.qualifications else [res1.qualifications])
         res2.qualifications.push(q)
     res2.log ?= []
-    if res1.log? and res1.log.length
+    if res1?.log? and res1.log.length
       for l in (if _.isArray(res1.log) then res1.log else [res1.log])
         res2.log.push(l)
     return res2
