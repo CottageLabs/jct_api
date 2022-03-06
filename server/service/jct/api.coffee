@@ -821,9 +821,11 @@ API.service.jct.permission = (issn, institution, perms) ->
           score: undefined,
           compliant: 'no'
         # licences - get all license types
-        if permission.licences? and permission.licences.length
-          for l in permission.licences ? []
-            values.licences.push l.type
+        oaw_licences = permission.licences ? []
+        if permission.licence
+          oaw_licences.push({type: permission.licence})
+        for l in oaw_licences
+          values.licences.push l.type
         # versions
         if permission.versions? and permission.versions.length
           values.versions = permission.versions
