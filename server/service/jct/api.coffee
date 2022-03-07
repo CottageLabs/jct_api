@@ -821,7 +821,7 @@ API.service.jct.permission = (issn, institution) ->
           if checks.matched_license is undefined and l.type.toLowerCase().replace(/\-/g,'').replace(/ /g,'') in ['ccby','ccbysa','cc0','ccbynd']
             checks.matched_license = l.type
         # license - check for matching license or missing license
-        if checks.matched_license or not permission.licences? or permission.licences.length is 0
+        if checks.matched_license or not oaw_licences.length is 0
           checks.license = true
         return checks
 
