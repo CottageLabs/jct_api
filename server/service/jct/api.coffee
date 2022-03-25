@@ -989,26 +989,29 @@ API.service.jct.hybrid = (issn, institution, funder, oa_permissions) ->
       res.log.push code: 'Hybrid.NotHybridInOAW'
     else
       res.log.push code: 'Hybrid.HybridInOAW'
+      res.log.push code: 'Hybrid.Compliant', parameters: licence: licences
+      res.compliant = 'yes'
+      # ANUSHA: we are no longer doing this, being hybrid is sufficient to be compliant
       # get list of licences and matching license condition
-      lc = false
-      licences = []
-      possibleLicences = pb.licences ? []
-      if pb.licence
-        possibleLicences.push({type: pb.licence})
-      for l in possibleLicences
-        licences.push l.type
-        # TODO: Need to match with funder config
-        if lc is false and l.type.toLowerCase().replace(/\-/g,'').replace(/ /g,'') in ['ccby','ccbysa','cc0','ccbynd']
-          lc = l.type
-      # check if license is compliant
-      if lc
-        res.log.push code: 'Hybrid.Compliant', parameters: licence: licences
-        res.compliant = 'yes'
-      else if not licences or licences.length is 0
-        res.log.push code: 'Hybrid.Unknown', parameters: missing: ['licences']
-        res.compliant = 'unknown'
-      else
-        res.log.push code: 'Hybrid.NonCompliant', parameters: licence: licences
+#      lc = false
+#      licences = []
+#      possibleLicences = pb.licences ? []
+#      if pb.licence
+#        possibleLicences.push({type: pb.licence})
+#      for l in possibleLicences
+#        licences.push l.type
+#        # TODO: Need to match with funder config
+#        if lc is false and l.type.toLowerCase().replace(/\-/g,'').replace(/ /g,'') in ['ccby','ccbysa','cc0','ccbynd']
+#          lc = l.type
+#      # check if license is compliant
+#      if lc
+#        res.log.push code: 'Hybrid.Compliant', parameters: licence: licences
+#        res.compliant = 'yes'
+#      else if not licences or licences.length is 0
+#        res.log.push code: 'Hybrid.Unknown', parameters: missing: ['licences']
+#        res.compliant = 'unknown'
+#      else
+#        res.log.push code: 'Hybrid.NonCompliant', parameters: licence: licences
   else
     res.log.push code: 'Hybrid.OAWTypeUnknown', parameters: missing: ['journal type']
     res.compliant = 'unknown'
