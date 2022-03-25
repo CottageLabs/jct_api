@@ -989,7 +989,6 @@ API.service.jct.hybrid = (issn, institution, funder, oa_permissions) ->
       res.log.push code: 'Hybrid.NotHybridInOAW'
     else
       res.log.push code: 'Hybrid.HybridInOAW'
-      res.log.push code: 'Hybrid.Compliant', parameters: licence: licences
       res.compliant = 'yes'
       # ANUSHA: we are no longer doing this, being hybrid is sufficient to be compliant
       # get list of licences and matching license condition
