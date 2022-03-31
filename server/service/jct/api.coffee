@@ -1,11 +1,15 @@
 import moment from 'moment'
 import mailgun from 'mailgun-js'
 import fs from 'fs'
+import path from 'path'
 import tar from 'tar'
 import Future from 'fibers/future'
 import { Random } from 'meteor/random'
 import unidecode from 'unidecode'
 import csvtojson from 'csvtojson'
+import jsYaml from 'js-yaml'
+import { Match } from 'meteor/check'
+import AdmZip from "adm-zip"
 import stream from 'stream'
 
 '''
@@ -46,15 +50,15 @@ funders will be a list given to us by JCT detailing their particular requirement
 # NOTE: doing this would mean live would not have recent data to read from, so after this code change is deployed to live 
 # it should be followed by manually triggering a full import on live
 # (for convenience the settings have initially been set up to only run import on dev as well, to make the most 
-# of the dev machine and minimise any potential memory or CPU intense work on the live machine - see the settings.json file for this config)
-
+# of the dev machine and minimise any potential memory or CPU intense work 
 index_name = API.settings.es.index ? 'jct'
-@jct_institution = new API.collection {index:index_name, type:"institution", devislive: true}
+jct_institution = new API.collection {index:index_name, type:"institution"}
 jct_journal = new API.collection {index:index_name, type:"journal"}
 jct_agreement = new API.collection {index:index_name, type:"agreement"}
 jct_compliance = new API.collection {index:index_name, type:"compliance"}
 jct_unknown = new API.collection {index:index_name, type:"unknown"}
-
+jct_funder_config = new API.collection {index:index_name, type:"funder_config"}
+jct_funder_language = new API.collection {index:index_name, type:"funder_language"}
 
 # define endpoints that the JCT requires (to be served at a dedicated domain)
 API.add 'service/jct', get: () -> return 'cOAlition S Journal Checker Tool. Service provided by Cottage Labs LLP. Contact us@cottagelabs.com'
@@ -71,7 +75,7 @@ API.add 'service/jct/ta',
       ret = []
       for r in (if not _.isArray(res) then [res] else res)
         if r.compliant is 'yes'
-          ret.push issn: r.issn, ror: r.ror, id: log[0].result.split(' - ')[1]
+          ret.push issn: r.issn, ror: r.ror, result: res
       return if ret.length then ret else 404
     else
       return jct_agreement.search this.queryParams
@@ -148,6 +152,10 @@ API.add 'service/jct/unknown/:start/:end',
 
 API.add 'service/jct/journal', get: () -> return jct_journal.search this.queryParams
 API.add 'service/jct/institution', get: () -> return jct_institution.search this.queryParams
+API.add 'service/jct/institution/:iid', get: () -> return API.service.jct.institution this.urlParams.iid
+API.add 'service/jct/institution/import', get: () ->
+  Meteor.setTimeout (() => API.service.jct.institution undefined, true), 1
+  return true
 API.add 'service/jct/compliance', get: () -> return jct_compliance.search this.queryParams
 # the results that have already been calculated. These used to get used to re-serve as a 
 # faster cached result, but uncertainties over agreement on how long to cache stuff made 
@@ -155,7 +163,19 @@ API.add 'service/jct/compliance', get: () -> return jct_compliance.search this.q
 
 API.add 'service/jct/test', get: () -> return API.service.jct.test this.queryParams
 
+API.add 'service/jct/funder_config', get: () ->
+  return API.service.jct.funder_config undefined, this.queryParams.refresh
+API.add 'service/jct/funder_config/:iid', get: () -> return API.service.jct.funder_config this.urlParams.iid
+API.add 'service/jct/funder_config/import', get: () ->
+  Meteor.setTimeout (() => API.service.jct.funder_config undefined, true), 1
+  return true
 
+API.add 'service/jct/funder_language', get: () ->
+  return API.service.jct.funder_language undefined, this.queryParams.refresh
+API.add 'service/jct/funder_language/:iid', get: () -> return API.service.jct.funder_language this.urlParams.iid
+API.add 'service/jct/funder_language/import', get: () ->
+  Meteor.setTimeout (() => API.service.jct.funder_language undefined, true), 1
+  return true
 
 _jct_clean = (str) ->
   pure = /[!-/:-@[-`{-~¡-©«-¬®-±´¶-¸»¿×÷˂-˅˒-˟˥-˫˭˯-˿͵;΄-΅·϶҂՚-՟։-֊־׀׃׆׳-״؆-؏؛؞-؟٪-٭۔۩۽-۾܀-܍߶-߹।-॥॰৲-৳৺૱୰௳-௺౿ೱ-ೲ൹෴฿๏๚-๛༁-༗༚-༟༴༶༸༺-༽྅྾-࿅࿇-࿌࿎-࿔၊-၏႞-႟჻፠-፨᎐-᎙᙭-᙮᚛-᚜᛫-᛭᜵-᜶។-៖៘-៛᠀-᠊᥀᥄-᥅᧞-᧿᨞-᨟᭚-᭪᭴-᭼᰻-᰿᱾-᱿᾽᾿-῁῍-῏῝-῟῭-`´-῾\u2000-\u206e⁺-⁾₊-₎₠-₵℀-℁℃-℆℈-℉℔№-℘℞-℣℥℧℩℮℺-℻⅀-⅄⅊-⅍⅏←-⏧␀-␦⑀-⑊⒜-ⓩ─-⚝⚠-⚼⛀-⛃✁-✄✆-✉✌-✧✩-❋❍❏-❒❖❘-❞❡-❵➔➘-➯➱-➾⟀-⟊⟌⟐-⭌⭐-⭔⳥-⳪⳹-⳼⳾-⳿⸀-\u2e7e⺀-⺙⺛-⻳⼀-⿕⿰-⿻\u3000-〿゛-゜゠・㆐-㆑㆖-㆟㇀-㇣㈀-㈞㈪-㉃㉐㉠-㉿㊊-㊰㋀-㋾㌀-㏿䷀-䷿꒐-꓆꘍-꘏꙳꙾꜀-꜖꜠-꜡꞉-꞊꠨-꠫꡴-꡷꣎-꣏꤮-꤯꥟꩜-꩟﬩﴾-﴿﷼-﷽︐-︙︰-﹒﹔-﹦﹨-﹫！-／：-＠［-｀｛-･￠-￦￨-￮￼-�]|\ud800[\udd00-\udd02\udd37-\udd3f\udd79-\udd89\udd90-\udd9b\uddd0-\uddfc\udf9f\udfd0]|\ud802[\udd1f\udd3f\ude50-\ude58]|\ud809[\udc00-\udc7e]|\ud834[\udc00-\udcf5\udd00-\udd26\udd29-\udd64\udd6a-\udd6c\udd83-\udd84\udd8c-\udda9\uddae-\udddd\ude00-\ude41\ude45\udf00-\udf56]|\ud835[\udec1\udedb\udefb\udf15\udf35\udf4f\udf6f\udf89\udfa9\udfc3]|\ud83c[\udc00-\udc2b\udc30-\udc93]/g;
@@ -178,7 +198,6 @@ API.service.jct.suggest.funder = (str, from, size) ->
   return total: res.length, data: res
 
 API.service.jct.suggest.institution = (str, from, size) ->
-  # TODO add an import method from wikidata or ROR, and have the usual import routine check for changes on a suitable schedule
   if typeof str is 'string' and str.length is 9 and rec = jct_institution.get str
     delete rec[x] for x in ['createdAt', 'created_date', '_id', 'description', 'values', 'wid']
     return total: 1, data: [rec]
@@ -269,9 +288,11 @@ API.service.jct.suggest.journal = (str, from, size) ->
   return total: res?.hits?.total ? 0, data: _.union starts.sort((a, b) -> return a.title.length - b.title.length), extra.sort((a, b) -> return a.title.length - b.title.length)
 
 
-API.service.jct.calculate = (params={}, refresh, checks=['sa', 'doaj', 'ta', 'tj']) ->
+API.service.jct.calculate = (params={}, refresh) ->
   # given funder(s), journal(s), institution(s), find out if compliant or not
   # note could be given lists of each - if so, calculate all and return a list
+
+  # Get parameters
   if params.issn
     params.journal = params.issn
     delete params.issn
@@ -279,9 +300,16 @@ API.service.jct.calculate = (params={}, refresh, checks=['sa', 'doaj', 'ta', 'tj
     params.institution = params.ror
     delete params.ror
   refresh ?= params.refresh if params.refresh?
-  if params.checks?
-    checks = if typeof params.checks is 'string' then params.checks.split(',') else params.checks
+  # all possible checks we can perform
+  checks = {
+    'self_archiving': 'sa',
+    'fully_oa': 'fully_oa',
+    'ta' : 'ta',
+    'tj': 'tj',
+    'hybrid': 'hybrid'
+  }
 
+  # initialise basic result object
   res =
     request:
       started: Date.now()
@@ -290,15 +318,16 @@ API.service.jct.calculate = (params={}, refresh, checks=['sa', 'doaj', 'ta', 'tj
       journal: []
       funder: []
       institution: []
-      checks: checks
+      checks: (prop for own prop, _value of checks)
     compliant: false
     cache: true
     results: []
+    cards: undefined
 
   return res if not params.journal
 
-  issnsets = {}
-  
+  # Get the matching data for the request parameters from suggest
+  issnsets = {} # set of all matching ISSNs for given journal (ISSN)
   for p in ['funder','journal','institution']
     params[p] = params[p].toString() if typeof params[p] is 'number'
     params[p] = params[p].split(',') if typeof params[p] is 'string'
@@ -311,45 +340,73 @@ API.service.jct.calculate = (params={}, refresh, checks=['sa', 'doaj', 'ta', 'tj
           issnsets[v] ?= ad.issn if p is 'journal' and _.isArray(ad.issn) and ad.issn.length
       res.request[p].push({id: v}) if not sg?.data
 
+  # calculate compliance for each combo, for all the routes
   rq = Random.id() # random ID to store with the cached results, to measure number of unique requests that aggregate multiple sets of entities
   checked = 0
   _check = (funder, journal, institution) ->
     hascompliant = false
     allcached = true
     _results = []
-    cr = sa: ('sa' in checks), doaj: ('doaj' in checks), ta: ('ta' in checks), tj: ('tj' in checks)
 
-    _ck = (which) ->
+    # get data from oa.works
+    oa_permissions = API.service.jct.oa_works (issnsets[journal] ? journal), (if institution? then institution else undefined)
+    # get funder config
+    funder_config = API.service.jct.funder_config funder, undefined
+
+    # checks to perform for journal
+    routes_to_check = []
+    if funder_config.routes? and Object.keys(funder_config.routes).length
+      for route, route_options of funder_config.routes
+        if route of checks and route_options.calculate? and route_options.calculate is true
+          routes_to_check.push(route)
+    res.request.checks = routes_to_check
+    cr = {}
+    for route, route_method of checks
+      cr[route_method] = route in res.request.checks
+
+    # calculate compliance for the route (which)
+    _ck = (route_method) ->
       allcached = false
       Meteor.setTimeout () ->
-        if which is 'sa'
-          rs = API.service.jct.sa (issnsets[journal] ? journal), (if institution? then institution else undefined), funder
+        if route_method is 'sa'
+          rs = API.service.jct.sa (issnsets[journal] ? journal), (if institution? then institution else undefined), funder, oa_permissions
+        else if route_method is 'hybrid'
+          rs =  API.service.jct.hybrid (issnsets[journal] ? journal), (if institution? then institution else undefined), funder, oa_permissions
         else
-          rs = API.service.jct[which] (issnsets[journal] ? journal), (if institution? and which is 'ta' then institution else undefined)
+          rs = API.service.jct[route_method] (issnsets[journal] ? journal), (if institution? and route_method is 'ta' then institution else undefined)
         if rs
           for r in (if _.isArray(rs) then rs else [rs])
             hascompliant = true if r.compliant is 'yes'
             if r.compliant is 'unknown'
               API.service.jct.unknown r, funder, journal, institution
             _results.push r
-        cr[which] = Date.now()
+        cr[route_method] = Date.now()
       , 1
-    for c in checks
+    # calculate compliance for each route in checks
+    for r, c of checks
       _ck(c) if cr[c]
 
-    while cr.sa is true or cr.doaj is true or cr.ta is true or cr.tj is true
+    # wait for all checks to finish
+    # If true, the check is not yet done. Once done, a check will have the current datetime
+    while cr.sa is true or cr.fully_oa is true or cr.ta is true or cr.tj is true or cr.hybrid is true
       future = new Future()
       Meteor.setTimeout (() -> future.return()), 100
       future.wait()
-    res.compliant = true if hascompliant
+
+    # calculate cards
+    cards_result = _cards_for_display(funder_config, _results)
+    res.cards = cards_result[0]
+    res.compliant = cards_result[1]
+
     delete res.cache if not allcached
     # store a new set of results every time without removing old ones, to keep track of incoming request amounts
-    jct_compliance.insert journal: journal, funder: funder, institution: institution, rq: rq, checks: checks, compliant: hascompliant, cache: allcached, results: _results
+    jct_compliance.insert journal: journal, funder: funder, institution: institution, rq: rq, checks: routes_to_check, compliant: hascompliant, cache: allcached, results: _results
     res.results.push(rs) for rs in _results
 
     checked += 1
 
-  combos = [] # make a list of all possible valid combos of params
+  # make a list of all possible valid combos of params
+  combos = []
   for j in (if params.journal and params.journal.length then params.journal else [undefined])
     cm = journal: j
     for f in (if params.funder and params.funder.length then params.funder else [undefined]) # does funder have any effect? - probably not right now, so the check will treat them the same
@@ -360,8 +417,8 @@ API.service.jct.calculate = (params={}, refresh, checks=['sa', 'doaj', 'ta', 'tj
         cm.institution = i
         combos.push cm
 
-  console.log 'Calculating for:'
-  console.log combos
+#  console.log 'Calculating for:'
+#  console.log combos
 
   # start an async check for every combo
   _prl = (combo) -> Meteor.setTimeout (() -> _check combo.funder, combo.journal, combo.institution), 1
@@ -637,6 +694,7 @@ API.service.jct.sa_prohibited = (issn, refresh) ->
             if isn not in exists.issn
               upd.issn.push isn
           upd.sa_prohibited = true if exists.sa_prohibited isnt true
+          # All of the sa prohibition data is held in journal.retention
           upd.retention = rt
           if JSON.stringify(upd) isnt '{}'
             for en in exists.issn
@@ -729,7 +787,14 @@ API.service.jct.retention = (issn, refresh) ->
     return jct_journal.count 'retained:true'
 
 
-API.service.jct.permission = (issn, institution) ->
+API.service.jct.oa_works = (issn, institution) ->
+  issn = issn.split(',') if typeof issn is 'string'
+  permsurl = 'https://api.openaccessbutton.org/permissions?meta=false&issn=' + (if typeof issn is 'string' then issn else issn.join(',')) + (if typeof institution is 'string' then '&ror=' + institution else if institution? and Array.isArray(institution) and institution.length then '&ror=' + institution.join(',') else '')
+  perms = HTTP.call('GET', permsurl, {timeout:3000}).data
+  return perms
+
+
+API.service.jct.permission = (issn, institution, perms) ->
   issn = issn.split(',') if typeof issn is 'string'
   res =
     route: 'self_archiving'
@@ -740,44 +805,145 @@ API.service.jct.permission = (issn, institution) ->
     funder: undefined
     log: []
 
+  if not perms.all_permissions? or perms.all_permissions.length is 0
+    res.log.push code: 'SA.NotInOAB'
+    return res
+  else
+    res.log.push code: 'SA.InOAB'
+
   try
-    permsurl = 'https://api.openaccessbutton.org/permissions?meta=false&issn=' + (if typeof issn is 'string' then issn else issn.join(',')) + (if typeof institution is 'string' then '&ror=' + institution else if institution? and Array.isArray(institution) and institution.length then '&ror=' + institution.join(',') else '')
-    perms = HTTP.call('GET', permsurl, {timeout:3000}).data
-    if perms.best_permission?
-      res.compliant = 'no' # set to no until a successful route through is found
-      pb = perms.best_permission
-      res.log.push code: 'SA.InOAB'
-      lc = false
-      pbls = [] # have to do these now even if can't archive, because needed for new API code algo values
-      possibleLicences = pb.licences ? []
-      if pb.licence
-        possibleLicences.push({type: pb.licence})
-      for l in possibleLicences
-        pbls.push l.type
-        if lc is false and l.type.toLowerCase().replace(/\-/g,'').replace(/ /g,'') in ['ccby','ccbysa','cc0','ccbynd']
-          lc = l.type # set the first but have to keep going for new API codes algo
-      if pb.can_archive
-        if 'postprint' in pb.versions or 'publisher pdf' in pb.versions or 'acceptedVersion' in pb.versions or 'publishedVersion' in pb.versions
-          # and Embargo is zero
-          if typeof pb.embargo_months is 'string'
-            try pb.embargo_months = parseInt pb.embargo_months
-          if typeof pb.embargo_months isnt 'number' or pb.embargo_months is 0
-            if lc
-              res.log.push code: 'SA.OABCompliant', parameters: licence: pbls, embargo: (if pb.embargo_months? then [pb.embargo_months] else undefined), version: pb.versions
-              res.compliant = 'yes'
-            else if not possibleLicences or possibleLicences.length is 0
-              res.log.push code: 'SA.OABIncomplete', parameters: missing: ['licences']
-              res.compliant = 'unknown'
-            else
-              res.log.push code: 'SA.OABNonCompliant', parameters: licence: pbls, embargo: (if pb.embargo_months? then [pb.embargo_months] else undefined), version: pb.versions
-          else
-            res.log.push code: 'SA.OABNonCompliant', parameters: licence: pbls, embargo: (if pb.embargo_months? then [pb.embargo_months] else undefined), version: pb.versions
+    # gather values from permission
+    _gather_values = (permission) =>
+      # initialise values to be gathered
+      values =
+        licences: [],
+        versions: undefined,
+        embargo: undefined,
+        planS: undefined,
+        score: undefined,
+        compliant: 'no'
+      # licences - get all license types
+      oaw_licences = permission.licences ? []
+      if permission.licence
+        oaw_licences.push({type: permission.licence})
+      for l in oaw_licences
+        values.licences.push l.type
+      # versions
+      if permission.versions? and permission.versions.length
+        values.versions = permission.versions
+      # embargo
+      if permission.embargo_months?
+        if typeof permission.embargo_months is 'string'
+          try permission.embargo_months = parseInt permission.embargo_months
+        values.embargo = [permission.embargo_months]
+      # planS compliant funder
+      if permission.requirements?.funder? and permission.requirements.funder.length and 'Plan S' in permission.requirements.funder
+        values.planS = true
+      # score
+      if permission.score?
+        values.score = permission.score
+        if typeof values.score is 'string'
+          try values.score = parseInt values.score
+      return values
+
+    # gather outcome of individual checks for permission
+    _gather_checks = (permission) =>
+      checks =
+        archive: undefined,
+        version: undefined,
+        requirements: undefined,
+        embargo: undefined,
+        matched_license: undefined,
+        license: undefined
+
+      # Perform each of the checks
+      # archive - check if permission allows archiving
+      checks.archive = if permission.can_archive then true else false
+      # version - check for acceptable version
+      checks.version = if 'postprint' in permission.versions or 'publisher pdf' in permission.versions or 'acceptedVersion' in permission.versions or 'publishedVersion' in permission.versions then true else false
+      # requirements - check if there is no requirement or requirement matches Plan S
+      if permission.requirements?
+        if permission.requirements.funder? and permission.requirements.funder.length and 'Plan S' in permission.requirements.funder
+          checks.requirements = true
         else
-          res.log.push code: 'SA.OABNonCompliant', parameters: licence: pbls, embargo: (if pb.embargo_months? then [pb.embargo_months] else undefined), version: pb.versions
+          checks.requirements = false
       else
-        res.log.push code: 'SA.OABNonCompliant', parameters: licence: pbls, embargo: (if pb.embargo_months? then [pb.embargo_months] else undefined), version: pb.versions
+        checks.requirements = true
+      # check if embargo is 0 (if integer value)
+      if permission.embargo_months?
+        if typeof permission.embargo_months isnt 'number' or permission.embargo_months is 0
+          checks.embargo = true
+        else
+          checks.embargo = false
+      else
+        checks.embargo = true
+      # matched_license - get first matching license
+      oaw_licences = permission.licences ? []
+      if permission.licence
+        oaw_licences.push({type: permission.licence})
+      for l in oaw_licences
+        if checks.matched_license is undefined and l.type.toLowerCase().replace(/\-/g,'').replace(/ /g,'') in ['ccby','ccbysa','cc0','ccbynd']
+          checks.matched_license = l.type
+      # license - check for matching license or missing license
+      if checks.matched_license or oaw_licences.length is 0
+        checks.license = true
+      return checks
+
+    # get best permission based on score
+    _best_permission = (list_of_values) =>
+      if not list_of_values or list_of_values.length is 0
+        return undefined
+      best_score = 0
+      selected_value = undefined
+      for value in list_of_values
+        if value.score? and typeof value.score is 'number' and value.score > best_score
+          best_score = value.score
+          selected_value = value
+      if not selected_value
+        selected_value = list_of_values[0]
+      return selected_value
+
+    # evaluate each permission from OA works
+    oa_check =
+      OABCompliant: [],
+      OABIncomplete: [],
+      OABNonCompliant: []
+    for permission in perms.all_permissions
+      p_values = _gather_values(permission)
+      p_checks = _gather_checks(permission)
+      if p_checks.archive and \
+        p_checks.requirements and \
+        p_checks.version and \
+        p_checks.embargo and \
+        p_checks.license
+        if p_checks.matched_license
+          p_values.compliant = 'yes'
+          oa_check.OABCompliant.push(p_values)
+        else
+          p_values.compliant = 'unknown'
+          p_values.missing = ['licences']
+          oa_check.OABIncomplete.push(p_values)
+      else
+        oa_check.OABNonCompliant.push(p_values)
+
+    # return best result
+    pb = undefined
+    if oa_check.OABCompliant.length
+      pb = _best_permission(oa_check.OABCompliant)
+      res.compliant = pb.compliant
+      res.log.push code: 'SA.OABCompliant', parameters: licence: pb.licences, embargo: pb.embargo, version: pb.versions
+      # ToDo - if planS in pb, do we need to add a qualification?
+    else if oa_check.OABIncomplete.length
+      pb = _best_permission(oa_check.OABIncomplete)
+      res.compliant = pb.compliant
+      res.log.push code: 'SA.OABIncomplete', parameters: missing: pb.missing
+    else if oa_check.OABNonCompliant.length
+      pb = _best_permission(oa_check.OABNonCompliant)
+      res.compliant = pb.compliant
+      res.log.push code: 'SA.OABNonCompliant', parameters: licence: pb.licences, embargo: pb.embargo, version: pb.versions
     else
-      res.log.push code: 'SA.NotInOAB'
+      res.compliant = 'unknown'
+      res.log.push code: 'SA.OABIncomplete', parameters: missing: ['licences']
   catch
     # Fixme: if we don't get an answer then we don't have the info, but this may not be strictly what we want.
     res.log.push code: 'SA.OABIncomplete', parameters: missing: ['licences']
@@ -785,8 +951,74 @@ API.service.jct.permission = (issn, institution) ->
   return res
 
 
+API.service.jct.hybrid = (issn, institution, funder, oa_permissions) ->
+  issn = issn.split(',') if typeof issn is 'string'
+  res =
+    route: 'hybrid'
+    compliant: 'unknown'
+    qualifications: undefined
+    issn: issn
+    ror: institution
+    funder: funder
+    log: []
+
+  # Check DOAJ. If present return non-compliant
+  if issn.length and jct_journal.find 'indoaj:true AND (issn.exact:"' + issn.join('" OR issn.exact:"') + '")'
+    res.compliant = 'no'
+    res.log.push code: 'Hybrid.InDOAJ'
+    return res
+
+  # Not in DOAJ
+  res.log.push code: 'Hybrid.NotInDOAJ'
+
+  # Check if in OAW
+  if not (oa_permissions.best_permission? and oa_permissions.best_permission)
+    res.compliant = 'unknown'
+    res.log.push code: 'Hybrid.NotInOAW'
+    return res
+
+  # In OAW
+  res.log.push code: 'Hybrid.InOAW'
+  pb = oa_permissions.best_permission
+
+  # lookup oa works journal type
+  if pb.issuer?.journal_oa_type?
+    journal_type = pb.issuer.journal_oa_type
+    if journal_type not in ['hybrid', 'transformative']
+      res.compliant = 'no'
+      res.log.push code: 'Hybrid.NotHybridInOAW'
+    else
+      res.log.push code: 'Hybrid.HybridInOAW'
+      res.compliant = 'yes'
+      # ANUSHA: we are no longer doing this, being hybrid is sufficient to be compliant
+      # get list of licences and matching license condition
+#      lc = false
+#      licences = []
+#      possibleLicences = pb.licences ? []
+#      if pb.licence
+#        possibleLicences.push({type: pb.licence})
+#      for l in possibleLicences
+#        licences.push l.type
+#        # TODO: Need to match with funder config
+#        if lc is false and l.type.toLowerCase().replace(/\-/g,'').replace(/ /g,'') in ['ccby','ccbysa','cc0','ccbynd']
+#          lc = l.type
+#      # check if license is compliant
+#      if lc
+#        res.log.push code: 'Hybrid.Compliant', parameters: licence: licences
+#        res.compliant = 'yes'
+#      else if not licences or licences.length is 0
+#        res.log.push code: 'Hybrid.Unknown', parameters: missing: ['licences']
+#        res.compliant = 'unknown'
+#      else
+#        res.log.push code: 'Hybrid.NonCompliant', parameters: licence: licences
+  else
+    res.log.push code: 'Hybrid.OAWTypeUnknown', parameters: missing: ['journal type']
+    res.compliant = 'unknown'
+  return res
+
+
 # Calculate self archiving check. It combines, sa_prohibited, OA.works permission and rr checks
-API.service.jct.sa = (journal, institution, funder) ->
+API.service.jct.sa = (journal, institution, funder, oa_permissions) ->
 
   _merge_logs_and_qa= (res1, res2) ->
     # merge the qualifications and logs from res1 into res2
@@ -813,7 +1045,7 @@ API.service.jct.sa = (journal, institution, funder) ->
     return res_r
 
   # Get OA.Works permission
-  rs = API.service.jct.permission journal, institution
+  rs = API.service.jct.permission journal, institution, oa_permissions
 
   # merge the qualifications and logs from SA prohibition and SA rights retention into OA.Works permission
   rs = _merge_logs_and_qa(res_r, rs)
@@ -844,7 +1076,7 @@ API.service.jct.sa = (journal, institution, funder) ->
   return rs
 
 
-API.service.jct.doaj = (issn) ->
+API.service.jct.fully_oa = (issn) ->
   issn = issn.split(',') if typeof issn is 'string'
   res =
     route: 'fully_oa'
@@ -936,6 +1168,7 @@ API.service.jct.funders = (id, refresh) ->
     for e in _funders
       if e.id is id
         return e
+    return false
   return _funders
 
 
@@ -1120,10 +1353,23 @@ API.service.jct.import = (refresh) ->
     res.funders = res.funders.length if _.isArray res.funders
     console.log 'JCT import funders complete'
 
+    # Institution data does not change regularly
+    # console.log 'Starting institution (ror) import'
+    # API.service.jct.institution.import()
+    # console.log 'JCT import institution (ror) complete'
+
     console.log 'Starting TAs data import'
     res.ta = API.service.jct.ta.import false # this is the slowest, takes about twenty minutes
     console.log 'JCT import TAs complete'
-  
+
+    console.log 'Starting Funder db config import'
+    API.service.jct.funder_config.import()
+    console.log 'JCT import Funder db config complete'
+
+    console.log 'Starting Funder db language import'
+    API.service.jct.funder_language.import()
+    console.log 'JCT import Funder db language complete'
+
     # check the mappings on jct_journal, jct_agreement, any others that get used and changed during import
     # include a warning in the email if they seem far out of sync
     # and include the previously and presently count, they should not be too different
@@ -1232,6 +1478,7 @@ API.service.jct.csv2json = Async.wrap (content, callback) ->
   content = HTTP.call('GET', content).content if content.indexOf('http') is 0
   csvtojson().fromString(content).then (result) -> return callback null, result
 
+
 API.service.jct.table2json = (content) ->
   content = HTTP.call('GET', content).content if content.indexOf('http') is 0 # TODO need to try this without puppeteer
   if content.indexOf('<table') isnt -1
@@ -1293,143 +1540,563 @@ API.service.jct.mail = (opts) ->
   return true
 
 
-
 API.service.jct.test = (params={}) ->
-  # A series of queries based on journals, with existing knowledge of their policies. 
-  # To test TJ and Rights retention elements of the algorithm some made up information is included, 
-  # this is marked with [1]. Not all queries test all the compliance routes (in particular rights retention).
-  # Expected JCT Outcome, is what the outcome should be based on reading the information within journal, institution and funder data. 
-  # Actual JCT Outcome is what was obtained by walking through the algorithm under the assumption that 
+  # This automates the tests and the outcomes defined in the JCT Integration Tests spreadsheet (sheet JCT)
+  # Expected JCT Outcome, is what the outcome should be based on reading the information within journal, institution and funder data.
+  # Actual JCT Outcome is what was obtained by walking through the algorithm under the assumption that
   # the publicly available information is within the JCT data sources.
-  params.refresh = true
-  params.sa_prohibition = true if not params.sa_prohibition?
-  params.test = params.tests if params.tests?
-  params.test = params.test.toString() if typeof params.test is 'number'
-  if typeof params.test is 'string'
-    ns = 1: 'one', 2: 'two', 3: 'three', 4: 'four', 5: 'five', 6: 'six', 7: 'seven', 8: 'eight', 9: 'nine', 10: 'ten'
-    for n in ['10','1','2','3','4','5','6','7','8','9']
-      params.test = params.test.replace n, ns[n]
-    params.test = params.test.split ','
-  
-  res = pass: true, fails: [], results: []
 
-  queries =
-    one: # Query 1
-      journal: 'Aging Cell' # (published by Wiley, fully OA, in DOAJ, CC BY, included within UK Jisc TA)
-      institution: 'Cardiff University' # (subscriber to Jisc TA) 03kk7td41
-      funder: 'Wellcome'
-      'expected outcome': 'Researcher can publish via gold open access route or via TA'
-      qualification: 'Researcher must be corresponding author to be eligible for TA'
-      'actual outcome': 'As expected'
-      test: (r) -> return r.compliant and JSON.stringify(r.results).indexOf('corresponding_authors') isnt -1
-    two: # Query 2
-      journal: 'Aging Cell' # (published by Wiley, fully OA, in DOAJ, CC BY, included within UK Jisc TA)
-      institution: 'Emory University' # (no TA or Wiley agreement) 03czfpz43
-      funder: 'Wellcome'
-      'expected outcome': 'Researcher can publish via gold open access route'
-      'actual outcome': 'As expected'
-      test: (r) -> return r.compliant and JSON.stringify(r.results).split('"fully_oa"')[1].split('"issn"')[0].indexOf('"yes"') isnt -1
-    three: # Query 3
-      journal: 'Aging Cell' # (published by Wiley, fully OA, in DOAJ, CC BY, included within UK Jisc & VSNU TAs)
-      institution: ['Emory University', 'Cardiff University', 'Utrecht University'] # 03czfpz43,03kk7td41,04pp8hn57 (Emory has no TA or Wiley account, Cardiff is subscriber to Jisc TA, Utrecht is subscriber to VSNU TA  which expires prior to 1 Jan 2021)
-      funder: ['Wellcome', 'NWO']
-      'expected outcome': 'For Cardiff: Researcher can publish via gold open access route or via TA (Qualification: Researcher must be corresponding author to be eligible for TA). For Emory and Utrecht: Researcher can publish via gold open access route'
-      'actual outcome': 'As expected'
-      test: (r) -> 
-        if r.compliant
-          rs = JSON.stringify r.results
-          if rs.indexOf('TA.Exists') isnt -1
-            return rs.split('"fully_oa"')[1].split('"issn"')[0].indexOf('"yes"') isnt -1
-        return false
-    four: # Query 4
-      journal: 'Proceedings of the Royal Society B' # (subscription journal published by Royal Society, AAM can be shared CC BY no embargo, UK Jisc Read Publish Deal)
-      institution: 'Rothamsted Research' # (subscribe to Read Publish Deal) 0347fy350
-      funder: 'European Commission' # EC
-      'expected outcome': 'Researcher can self-archive or publish via Read Publish Deal'
-      qualification: 'Research must be corresponding author to be eligible for Read Publish Deal'
-      'actual outcome': 'As expected'
-      test: (r) -> 
-        if r.compliant
-          rs = JSON.stringify r.results
-          return rs.indexOf('corresponding_authors') isnt -1 and rs.indexOf('TA.Exists') isnt -1
-        return false
-    five: # Query 5
-      journal: 'Proceedings of the Royal Society B' # (subscription journal published by Royal Society, AAM can be shared CC BY no embargo, UK Jisc Read Publish Deal)
-      institution: 'University of Cape Town' # 03p74gp79
-      funder: 'Bill & Melinda Gates Foundation' # Bill & Melinda Gates Foundation billmelindagatesfoundation
-      'expected outcome': 'Researcher can self-archive'
-      'actual outcome': 'As expected'
-      test: (r) -> 
-        if r.compliant
-          for rs in r.results
-            if rs.route is 'self_archiving' and rs.compliant is 'yes'
-              return true
-        return false
-    six: # Query 6
-      journal: '1477-9129' # Development (published by Company of Biologists, not the other one, hence done by ISSN) # (Transformative Journal, AAM 12 month embargo) 0951-1991
-      institution: 'University of Cape Town' # 03p74gp79
-      funder: 'SAMRC'
-      'expected outcome': 'Researcher can publish via payment of APC (Transformative Journal)'
-      'actual outcome': 'As expected'
-      test: (r) -> return r.compliant and JSON.stringify(r.results).indexOf('TJ.Exists') isnt -1
-    seven: # Query 7
-      journal: 'Brill Research Perspectives in Law and Religion' # (Subscription Journal, VSNU Read Publish Agreement, AAM can be shared CC BY-NC no embargo)
-      institution: 'University of Amsterdam' # 04dkp9463
-      funder: 'NWO'
-      'expected outcome': 'Research can publish via the Transformative Agreement'
-      qualification: 'Researcher must be corresponding author to take advantage of the TA.'
-      'actual outcome': 'As expected'
-      test: (r) ->
-        if r.compliant
-          rs = JSON.stringify r.results
-          return rs.indexOf('corresponding_authors') isnt -1 and rs.indexOf('TA.Exists') isnt -1
-        return false
-    eight: # Query 8
-      journal: 'Migration and Society' # (Subscribe to Open, CC BY, CC BY-ND and CC BY-NC-ND licences available but currently only CC BY-NC-ND in DOAJ)
-      institution: 'University of Vienna' # 03prydq77
-      funder: 'FWF'
-      'expected outcome': 'No routes to compliance'
-      'actual outcome': 'As expected' # this is not possible because everything is currently compliant due to rights retention
-      #test: (r) -> return not r.compliant
-      test: (r) -> return r.compliant and JSON.stringify(r.results).indexOf('SA.Compliant') isnt -1
-    nine: # Query 9 
-      journal: 'Folia Historica Cracoviensia' # (fully oa, in DOAJ, CC BY-NC-ND)
-      institution: ['University of Warsaw', 'University of Ljubljana'] # 039bjqg32,05njb9z20
-      funder: ['NCN']
-      'expected outcome': 'No route to compliance.' # this is impossible due to rights retention
-      'actual outcome': 'As expected'
-      #test: (r) -> return not r.compliant
-      test: (r) -> return r.compliant and JSON.stringify(r.results).indexOf('SA.Compliant') isnt -1
-    ten: # Query 10
-      journal: 'Journal of Clinical Investigation' # (subscription for front end material, research articles: publication fee, no embargo, CC BY licence where required by funders, not in DOAJ, Option 5 Rights Retention Policy [1])
-      institution: 'University of Vienna' # 03prydq77
-      funder: 'FWF'
-      'expected outcome': 'Researcher can publish via standard publication route'
-      'actual outcome': 'Researcher cannot publish in this journal and comply with funders OA policy' # as there is no rights retention this is impossible so it does succeed
-      #test: (r) -> return not r.compliant
-      test: (r) -> return r.compliant and JSON.stringify(r.results).indexOf('SA.Compliant') isnt -1
+  _get_val = (cell, type = false) ->
+    val = undefined
+    try
+      if typeof cell is 'string'
+        val = cell.trim()
+      if type is 'array'
+        if ',' in val
+          values = val.split(',')
+          for v, index in values
+            values[index] = v.trim()
+          val = values
+        if not Array.isArray(val)
+          val = [val]
+      if type in ['number', 'number_to_boolean']
+        val = parseInt val
+        if type is 'number_to_boolean'
+          if val > 0
+            val = true
+          else
+            val = false
+    catch
+      val = undefined
+    return val
 
-  for q of queries
-    if not params.test? or q in params.test
-      qr = queries[q]
-      ans = query: q
-      ans.pass = false
-      ans.inputs = queries[q]
-      ans.discovered = issn: [], funder: [], ror: []
-      for k in ['journal','institution','funder']
-        for j in (if typeof qr[k] is 'string' then [qr[k]] else qr[k])
-          try
-            ans.discovered[if k is 'journal' then 'issn' else if k is 'institution' then 'ror' else 'funder'].push API.service.jct.suggest[k](j).data[0].id
-          catch
-            console.log k, j
-      ans.result = API.service.jct.calculate {funder: ans.discovered.funder, issn: ans.discovered.issn, ror: ans.discovered.ror}, params.refresh, params.checks
-      ans.pass = queries[q].test ans.result
-      if ans.pass isnt true
-        res.pass = false
-        res.fails.push q
-      res.results.push ans
-  
-  delete res.fails if not res.fails.length
-  return res
+  _get_query_params = (test) ->
+    query =
+      issn: _get_val(test['ISSN'])
+      funder: _get_val(test['Funder ID'])
+      ror: _get_val(test['ROR'])
+    return query
 
+  _get_expected_cards = (test) ->
+    expected_cards = []
+    for cell in ['Card 1', 'Card 2', 'Card 3', 'Card 4']
+      val = _get_val(test[cell])
+      if val
+        expected_cards.push(val)
+    return expected_cards
+
+  _initialise_result = (test) ->
+    res =
+      id: _get_val(test['Test ID'], 'number')
+      journal:
+        issn: _get_val(test['ISSN'])
+        expected: _get_val(test['Journal Name'])
+        got: undefined
+        outcome: undefined
+      funder:
+        id: _get_val(test['Funder ID'])
+        expected: _get_val(test['Funder Name'])
+        got: undefined
+        outcome: undefined
+      institution:
+        ror: _get_val(test['ROR'])
+        expected: _get_val(test['Institution'])
+        got: undefined
+        outcome: undefined
+      route:
+        fully_oa:
+          expected: _get_val(test['Fully OA'], 'number_to_boolean')
+          got: undefined
+          outcome: undefined
+          log_codes:
+            expected: _get_val(test['Fully OA log codes'], 'array')
+            got: undefined
+            outcome: undefined
+        ta:
+          expected: _get_val(test['TA'], 'number_to_boolean')
+          got: undefined
+          outcome: undefined
+          log_codes:
+            expected: _get_val(test['TA log codes'], 'array')
+            got: undefined
+            outcome: undefined
+        tj:
+          expected: _get_val(test['TJ'], 'number_to_boolean')
+          got: undefined
+          outcome: undefined
+          log_codes:
+            expected: _get_val(test['TJ log codes'], 'array')
+            got: undefined
+            outcome: undefined
+        self_archiving:
+          expected: _get_val(test['SA'], 'number_to_boolean')
+          got: undefined
+          outcome: undefined
+          log_codes:
+            expected: _get_val(test['SA log codes'], 'array')
+            got: undefined
+            outcome: undefined
+        hybrid:
+          expected: _get_val(test['Hybrid'], 'number_to_boolean')
+          got: undefined
+          outcome: undefined
+          log_codes:
+            expected: _get_val(test['Hybrid log codes'], 'array')
+            got: undefined
+            outcome: undefined
+      cards:
+        expected: _get_expected_cards(test)
+        got: undefined
+        outcome: undefined
+      result:
+        outcome: true
+        pass: 0
+        fail: 0
+        warning: 0
+        total: 0
+        message: []
+    return res
+
+  _initialise_final_result = () ->
+    result =
+      outcome: true
+      pass: 0
+      fail: 0
+      warning: 0
+      total: 0
+      message: []
+      test_result: []
+    return result
+
+  _test_equal = (expected, got) ->
+    if typeof expected is 'string'
+      if not typeof got is 'string'
+        got = got.toString()
+      return expected.toLowerCase() == got.toLowerCase()
+    else if typeof expected is 'boolean'
+      if typeof got isnt 'boolean'
+        return false
+      return got is expected
+    else
+      if not _.isArray(expected) then [expected] else expected
+      if not _.isArray(got) then [got] else got
+      if got.length is expected.length and expected.every (elem) -> elem in got
+        return true
+    return false
+
+  _match_query = (param, output, res) ->
+    if res[param].expected isnt undefined
+      res[param].outcome = false
+      if output.request[param] and output.request[param].length and output.request[param][0].title?
+        res[param].got =  _get_val(output.request[param][0].title)
+        res[param].outcome = _test_equal(res[param].expected, res[param].got)
+    return
+
+  _test_compliance = (route_name, output_result, res) ->
+    # get compliance
+    if output_result.compliant?
+      ans = false
+      if output_result.compliant is "yes"
+        ans = true
+      res.route[route_name].got = ans
+    if res.route[route_name].expected isnt undefined
+      res.route[route_name].outcome = _test_equal(res.route[route_name].expected, res.route[route_name].got)
+    return
+
+  _test_log_codes = (route_name, output_result, res) ->
+    # get log codes
+    expected = res.route[route_name].log_codes.expected
+    if expected is undefined or not expected
+      expected = []
+    if not Array.isArray(expected)
+      expected = [expected]
+    got = []
+    if output_result.log? and output_result.log.length
+      for log in output_result.log
+        if log.code? and log.code
+          got.push(log.code)
+    res.route[route_name].log_codes.got = got
+    res.route[route_name].log_codes.outcome = _test_equal(expected, got)
+    return
+
+  _test_route = (output, res) ->
+    if output.results? and output.results.length
+      for output_result in output.results
+        route_name = output_result.route
+        if res.route[route_name]?
+          _test_compliance(route_name, output_result, res)
+          _test_log_codes(route_name, output_result, res)
+    return
+
+  _test_cards = (output, res) ->
+    # get expected cards
+    expected = res.cards.expected
+    got = []
+    if output.cards? and output.cards.length
+      for card in output.cards
+        if card.id? and card.id
+          got.push(card.id)
+      res.cards.got = got
+    res.cards.outcome = _test_equal(expected, got)
+    return
+
+  _add_message = (type, id, name, got, expected) ->
+    message = type + ': ' + id + ' - ' + name + ' - ' + 'Got: ' + JSON.stringify(got) + ' Expected: ' + JSON.stringify(expected)
+    return message
+
+  _add_query_outcome = (param, res) ->
+    if res[param].outcome isnt true
+      res.result.message.push(_add_message('Warning', res.id, 'Query param ' + param, res[param].got, res[param].expected))
+
+  _add_compliance_outcome = (param, res) ->
+    res.result.total += 1
+    if typeof res.route[param].outcome is 'boolean'
+      res.result.outcome = res.result.outcome and res.route[param].outcome
+    if res.route[param].outcome is undefined
+      res.result.warning += 1
+      res.result.message.push(_add_message('Warning', res.id, param + ' compliance', res.route[param].got, res.route[param].expected))
+    else if res.route[param].outcome is true
+      res.result.pass += 1
+      # res.result.message.push(_add_message('Debug', res.id, param + ' compliance', res.route[param].got, res.route[param].expected))
+    else
+      res.result.fail += 1
+      res.result.message.push(_add_message('Error', res.id, param + ' compliance', res.route[param].got, res.route[param].expected))
+
+  _add_log_codes_outcome = (param, res) ->
+    res.result.total += 1
+    if typeof res.route[param].log_codes.outcome is 'boolean'
+      res.result.outcome = res.result.outcome and res.route[param].log_codes.outcome
+    if res.route[param].log_codes.outcome is undefined
+      res.result.warning += 1
+      res.result.message.push(_add_message('Warning', res.id, param + ' log codes ', res.route[param].log_codes.got, res.route[param].log_codes.expected))
+    else if res.route[param].log_codes.outcome is true
+      res.result.pass += 1
+      # res.result.message.push(_add_message('Debug', res.id, param + ' log codes ', res.route[param].log_codes.got, res.route[param].log_codes.expected))
+    else
+      res.result.fail += 1
+      res.result.message.push(_add_message('Error', res.id, param + ' log codes ', res.route[param].log_codes.got, res.route[param].log_codes.expected))
+
+  _add_cards_outcome = (res) ->
+    res.result.total += 1
+    if typeof res.cards.outcome is 'boolean'
+      res.result.outcome = res.result.outcome and res.cards.outcome
+    if res.cards.outcome is undefined
+      res.result.warning += 1
+      res.result.message.push(_add_message('Warning', res.id, 'cards', res.cards.got, res.cards.expected))
+    else if res.cards.outcome is true
+      res.result.pass += 1
+      # res.result.message.push(_add_message('Debug', res.id, 'cards', res.cards.got, res.cards.expected))
+    else
+      res.result.fail += 1
+      res.result.message.push(_add_message('Error', res.id, 'cards', res.cards.got, res.cards.expected))
+
+  _add_outcome = (res) ->
+    # match query - journal
+    _add_query_outcome('journal', res)
+    _add_query_outcome('funder', res)
+    _add_query_outcome('institution', res)
+    for route_name, route_outcomes of res.route
+      _add_compliance_outcome(route_name, res)
+      _add_log_codes_outcome(route_name, res)
+    _add_cards_outcome(res)
+
+  _add_final_outcome = (res, final_result) ->
+    final_result.total += 1
+    if typeof res.result.outcome is 'boolean'
+      final_result.outcome = final_result.outcome and res.result.outcome
+    if res.result.outcome is undefined
+      final_result.warning += 1
+      Array::push.apply final_result.message, res.result.message
+    else if res.result.outcome is true
+      final_result.pass += 1
+    else if res.result.outcome is false
+      final_result.fail += 1
+      Array::push.apply final_result.message, res.result.message
+    final_result.test_result.push(res)
+
+  # original test sheet
+  test_sheet= "https://docs.google.com/spreadsheets/d/e/2PACX-1vTjuuobH3m7Bq5ztsKnue5W7ieqqsBYOm5sX17_LSuQjkyNTozvOED5E0hvazWRjIfSW5xvhRSdNLBF/pub?gid=0&single=true&output=csv"
+  # Test sheet with my extensions
+  # test_sheet = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRW1YDHv4vu-7BexRKXWVd6HpD8ohXNvibj6vF_HP7H8YsBu6Yy1NcANXjg4E6lI-tIiImR2lhVKF0L/pub?gid=0&single=true&output=csv"
+
+  console.log 'Getting list of tests'
+  tests = API.service.jct.csv2json test_sheet
+  console.log 'Retrieved ' + tests.length + ' tests from sheet'
+
+  final_result = _initialise_final_result()
+  for test in tests
+    query = _get_query_params(test)
+    res = _initialise_result(test)
+    console.log('Doing test ' + res.id)
+    if query.issn and query.funder # ror can be empty
+      output = API.service.jct.calculate {funder: query.funder, issn: query.issn, ror: query.ror}
+      for match in ['funder', 'journal', 'institution']
+        _match_query(match, output, res)
+      _test_route(output, res)
+      _test_cards(output, res)
+      _add_outcome(res)
+    _add_final_outcome(res, final_result)
+  return final_result
+
+# return the funder config for an id. Import the data if refresh is true
+API.service.jct.funder_config = (id, refresh) ->
+  if refresh
+    console.log('Got refresh - importing funder config')
+    Meteor.setTimeout (() => API.service.jct.funder_config.import()), 1
+    return true
+  if id
+    rec = jct_funder_config.find 'id.exact:"' + id.toLowerCase().trim() + '"'
+    if rec
+      return rec
+    return {}
+  else
+    return total: jct_funder_config.count()
+
+
+# For each funder in jct-funderdb repo, get the final funder configuration
+# The funder's specific config file gets merged with the default config file, to create the final config file
+# This is saved in elastic search
+API.service.jct.funder_config.import = () ->
+  funderdb_path = path.join(process.env.PWD, API.settings.funderdb)
+  default_config_file = path.join(funderdb_path, 'default', 'config.yml')
+  default_config = jsYaml.load(fs.readFileSync(default_config_file, 'utf8'));
+  funders_config = []
+  # For each funder in directory
+  for f in fs.readdirSync funderdb_path
+    # parse and get the merged config file if it isn't default
+    if f isnt 'default'
+      funder_config_file = path.join(funderdb_path, f, 'config.yml')
+      if fs.existsSync funder_config_file
+        funder_config = jsYaml.load(fs.readFileSync(funder_config_file, 'utf8'));
+        merged_config = _merge_funder_config(default_config, funder_config)
+        funders_config.push(merged_config)
+  if funders_config.length
+    console.log 'Removing and reloading ' + funders_config.length + ' funders configuration'
+    jct_funder_config.remove '*'
+    jct_funder_config.insert funders_config
+  return
+
+# return the funder language for an id. Import the data if refresh is true
+API.service.jct.funder_language = (id, refresh) ->
+  if refresh
+    console.log('Got refresh - importing funder language files')
+    Meteor.setTimeout (() => API.service.jct.funder_language.import()), 1
+    return true
+  if id
+    rec = jct_funder_language.find 'id.exact:"' + id.toLowerCase().trim() + '"'
+    if rec
+      return rec
+    return {}
+  else
+    return total: jct_funder_language.count()
+
+# For each funder in jct-funderdb repo, get the final funder language file
+# The funder's specific language files get merged with the default language files, to create the final language file
+# This is saved in elastic search
+API.service.jct.funder_language.import = () ->
+  funderdb_path = path.join(process.env.PWD, API.settings.funderdb)
+  default_lang_files_path = path.join(funderdb_path, 'default', 'lang')
+  default_language = _flatten_yaml_files(default_lang_files_path)
+  funders_language = []
+  for f in fs.readdirSync funderdb_path
+    # parse and get the merged config file if it isn't default
+    if f isnt 'default'
+      funder_lang_files_path = path.join(funderdb_path, f, 'lang')
+      if fs.existsSync funder_lang_files_path
+        merged_lang = _merge_language_files(default_language, funder_lang_files_path)
+        merged_lang['id'] = f
+        funders_language.push(merged_lang)
+      else
+        merged_lang = JSON.parse(JSON.stringify(default_language))
+        merged_lang['id'] = f
+        funders_language.push(merged_lang)
+  if funders_language.length
+    console.log 'Removing and reloading ' + funders_language.length + ' funders language files'
+    jct_funder_language.remove '*'
+    jct_funder_language.insert funders_language
+  return
+
+_merge_funder_config = (default_config, funder_config) ->
+  result = _jct_object_merge(default_config, funder_config)
+  return result
+
+_merge_language_files = (default_language, language_files_path) ->
+  funder_lang = _flatten_yaml_files(language_files_path)
+  result = _jct_object_merge(default_language, funder_lang)
+  return result
+
+_jct_object_merge = (default_object, specific_object) ->
+  result = JSON.parse(JSON.stringify(default_object)) # deep copy object
+  for key in Object.keys(specific_object)
+    # If specific_object[key] is an object and the key exists in default_object
+    if Match.test(specific_object[key], Object)
+      if key in Object.keys(default_object)
+        result[key] = _jct_object_merge(default_object[key], specific_object[key])
+      else
+        result[key] = specific_object[key]
+    else
+      result[key] = specific_object[key]
+  return result
+
+_flatten_yaml_files = (lang_files_path) ->
+  flattened_config = {}
+  if not fs.existsSync lang_files_path
+    return flattened_config
+  if not fs.lstatSync(lang_files_path).isDirectory()
+    return flattened_config
+  for sub_file_name in fs.readdirSync lang_files_path
+    sub_file_path = path.join(lang_files_path, sub_file_name)
+    if fs.existsSync(sub_file_path) && fs.lstatSync(sub_file_path).isDirectory()
+      flattened_config[sub_file_name] = _flatten_yaml_files(sub_file_path)
+    else
+      menu = sub_file_name.split('.')[0]
+      flattened_config[menu] = jsYaml.load(fs.readFileSync(sub_file_path, 'utf8'));
+  return flattened_config
+
+_cards_for_display = (funder_config, results) ->
+  _hasQualification = (path) ->
+    parts = path.split(".")
+    if results and results.length
+      for r in results
+        if parts[0] is r.route
+          if r.qualifications? and r.qualifications.length
+            for q in r.qualifications
+              if parts[1] of q # key is in q
+                return true
+    return false
+
+  _matches_qualifications = (qualifications) ->
+    if not qualifications
+      return true
+    if qualifications.must? and qualifications.must.length
+      for m_q in qualifications.must
+        return false if not _hasQualification(m_q)
+    if qualifications.not? and qualifications.not.length
+      for n_q in qualifications.not
+        return false if _hasQualification(n_q)
+    if qualifications.or? and qualifications.or.length
+      for o_q in qualifications.or
+        return true if _hasQualification(oq)
+      return false
+    return true
+
+  _matches_routes = (routes, compliantRoutes) ->
+    if not routes
+      return true
+    if routes.must? and routes.must.length
+      for m_r in routes.must
+        if m_r not in compliantRoutes
+          return false
+    if routes.not? and routes.not.length
+      for n_r in routes.not
+        if n_r in compliantRoutes
+          return false
+    if routes['or']? and routes['or'].length
+      for o_r in routes['or']
+        if o_r in compliantRoutes
+          return true
+      return false
+    return true
+
+  _matches = (cardConfig, compliantRoutes) ->
+    _matches_routes(cardConfig.match_routes, compliantRoutes) &&
+      _matches_qualifications(cardConfig.match_qualifications);
+
+  # compliant routes
+  compliantRoutes = []
+  if results and results.length
+    for r in results
+      if r.compliant is "yes"
+        compliantRoutes.push(r.route)
+  # list the cards to display
+  is_compliant = false
+  cards = []
+  if funder_config
+    if funder_config.cards? and funder_config.cards.length
+      for cardConfig in funder_config.cards
+        if _matches(cardConfig, compliantRoutes)
+          cards.push(cardConfig)
+          if cardConfig.compliant is true
+            is_compliant = true
+
+  # sort the cards according to the correct order
+  sorted_cards = []
+  if cards
+    if funder_config.card_order? and funder_config.card_order.length
+      for next_card in funder_config.card_order
+        for card in cards
+          if card.id is next_card
+            sorted_cards.push(card)
+    else
+      sorted_cards = cards
+
+  return [sorted_cards, is_compliant]
+
+# return the institution for an id. Import the data if refresh is true
+API.service.jct.institution = (id, refresh) ->
+  if refresh
+    console.log('Got refresh - importing institution (ror)')
+    Meteor.setTimeout (() => API.service.jct.institution.import()), 1
+    return true
+  if id
+    rec = jct_institution.find 'id.exact:"' + id.toLowerCase().trim() + '"'
+    if rec
+      return rec
+    return {}
+  else
+    return total: jct_institution.count()
+
+# import institution data from ror
+API.service.jct.institution.import = () ->
+  _set_id = (rec) ->
+    ror = rec.id
+    id = ror.replace("https://ror.org/", '')
+    rec.id = id
+    rec.ror = id
+    rec.ror_id = ror
+    return rec
+
+  _set_title = (rec) ->
+    rec.title = rec.name
+    return rec
+
+  # Download zip file from github containing data dump of RoR
+  fldr = '/tmp/jct_ror' + (if API.settings.dev then '_dev' else '') + '/'
+  if fs.existsSync fldr
+    fs.rmdirSync(fldr, { recursive: true });
+  fs.mkdirSync fldr
+  filepath = fldr + 'ror.zip'
+  ror_data_dump_url = 'https://github.com/ror-community/ror-api/raw/master/rorapi/data/ror-2021-09-23/ror.zip'
+  fs.writeFileSync filepath, HTTP.call('GET', ror_data_dump_url, {npmRequestOptions:{encoding:null}}).content
+  console.log 'Importing from ROR data dump ' + fldr + 'ror.zip'
+  zip = AdmZip(filepath)
+  zip.extractEntryTo("ror.json", fldr)
+
+  # Remove old data and index new
+  removed = false
+  batch = []
+  counter = 1
+  imports = 0
+  for rec in JSON.parse fs.readFileSync fldr + 'ror.json'
+    if batch.length >= 20000
+      if not removed
+        console.log 'Removing old institution records'
+        jct_institution.remove '*'
+        future = new Future()
+        Meteor.setTimeout (() -> future.return()), 10000
+        future.wait()
+        removed = true
+      console.log 'Importing RoR batch ' + counter
+      jct_institution.insert batch
+      counter += 1
+      batch = []
+    rec = _set_id(rec)
+    rec = _set_title(rec)
+    batch.push rec
+    imports += 1
+  if batch.length
+    console.log 'Importing RoR batch ' + counter
+    jct_institution.insert batch
+    batch = []
+  console.log('Completed importing ror data ', imports)
 
