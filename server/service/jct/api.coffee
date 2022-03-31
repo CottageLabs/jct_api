@@ -1139,7 +1139,7 @@ API.service.jct.funders = (id, refresh) ->
         funder: r['cOAlition S organisation (funder)']
         launch: r['Launch date for implementing  Plan S-aligned OA policy']
         application: r['Application of Plan S principles ']
-        retention: r['Rights Retention Strategy Implementation']
+        retention: r['Rights Retention Strategy']
       try rec.funder = rec.funder.replace('&amp;','&')
       for k of rec
         if rec[k]?
@@ -1162,6 +1162,8 @@ API.service.jct.funders = (id, refresh) ->
         rec.notes ?= []
         rec.notes.push rec.launch
       try rec.id = rec.funder.toLowerCase().replace(/[^a-z0-9]/g,'')
+      console.log(JSON.stringify(rec))
+      console.log('-')
       _funders.push(rec) if rec.id?
     
   if id?
