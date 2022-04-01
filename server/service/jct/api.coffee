@@ -178,9 +178,27 @@ API.add 'service/jct/funder_language/import', get: () ->
   return true
 
 _jct_clean = (str) ->
-  pure = /[!-/:-@[-`{-~¡-©«-¬®-±´¶-¸»¿×÷˂-˅˒-˟˥-˫˭˯-˿͵;΄-΅·϶҂՚-՟։-֊־׀׃׆׳-״؆-؏؛؞-؟٪-٭۔۩۽-۾܀-܍߶-߹।-॥॰৲-৳৺૱୰௳-௺౿ೱ-ೲ൹෴฿๏๚-๛༁-༗༚-༟༴༶༸༺-༽྅྾-࿅࿇-࿌࿎-࿔၊-၏႞-႟჻፠-፨᎐-᎙᙭-᙮᚛-᚜᛫-᛭᜵-᜶។-៖៘-៛᠀-᠊᥀᥄-᥅᧞-᧿᨞-᨟᭚-᭪᭴-᭼᰻-᰿᱾-᱿᾽᾿-῁῍-῏῝-῟῭-`´-῾\u2000-\u206e⁺-⁾₊-₎₠-₵℀-℁℃-℆℈-℉℔№-℘℞-℣℥℧℩℮℺-℻⅀-⅄⅊-⅍⅏←-⏧␀-␦⑀-⑊⒜-ⓩ─-⚝⚠-⚼⛀-⛃✁-✄✆-✉✌-✧✩-❋❍❏-❒❖❘-❞❡-❵➔➘-➯➱-➾⟀-⟊⟌⟐-⭌⭐-⭔⳥-⳪⳹-⳼⳾-⳿⸀-\u2e7e⺀-⺙⺛-⻳⼀-⿕⿰-⿻\u3000-〿゛-゜゠・㆐-㆑㆖-㆟㇀-㇣㈀-㈞㈪-㉃㉐㉠-㉿㊊-㊰㋀-㋾㌀-㏿䷀-䷿꒐-꓆꘍-꘏꙳꙾꜀-꜖꜠-꜡꞉-꞊꠨-꠫꡴-꡷꣎-꣏꤮-꤯꥟꩜-꩟﬩﴾-﴿﷼-﷽︐-︙︰-﹒﹔-﹦﹨-﹫！-／：-＠［-｀｛-･￠-￦￨-￮￼-�]|\ud800[\udd00-\udd02\udd37-\udd3f\udd79-\udd89\udd90-\udd9b\uddd0-\uddfc\udf9f\udfd0]|\ud802[\udd1f\udd3f\ude50-\ude58]|\ud809[\udc00-\udc7e]|\ud834[\udc00-\udcf5\udd00-\udd26\udd29-\udd64\udd6a-\udd6c\udd83-\udd84\udd8c-\udda9\uddae-\udddd\ude00-\ude41\ude45\udf00-\udf56]|\ud835[\udec1\udedb\udefb\udf15\udf35\udf4f\udf6f\udf89\udfa9\udfc3]|\ud83c[\udc00-\udc2b\udc30-\udc93]/g;
-  str = str.replace(pure, ' ')
-  return str.toLowerCase().replace(/ +/g,' ').trim()
+  specialChars = ["\\", "+", "-", "=", "&&", "||", ">", "<", "!", "(", ")", "{", "}", "[", "]", "^", "~", "?", ":", "/"]
+  characterPairs = ['"']
+  _escapeRegExp = (str) ->
+    return str.replace(/([.*+?^=!:${}()|\[\]\/\\])/g, "\\$1")
+
+  _paired = (str, pair) ->
+    matches = (str.match(new RegExp(_escapeRegExp(pair), "g"))) || []
+    return matches.length % 2 == 0
+
+  _replaceAll = (str, fstr, rstr) ->
+    return str.replace(new RegExp(_escapeRegExp(fstr), 'g'), rstr)
+
+  # first check for pairs, and push any extra characters to be escaped
+  scs = specialChars.slice(0)
+  for char in characterPairs
+    if not _paired(str, char)
+      scs.push(char)
+  # now do the escape
+  for char in scs
+    str = _replaceAll(str, char, "\\" + char)
+  return str.toLowerCase().trim()
 
 # and now define the methods
 API.service ?= {}
@@ -198,6 +216,19 @@ API.service.jct.suggest.funder = (str, from, size) ->
   return total: res.length, data: res
 
 API.service.jct.suggest.institution = (str, from, size) ->
+  _cleanup_data = (data) ->
+    cleaned_data = []
+    for val in data
+      new_val = {
+        'id': val.id,
+        'title': val.title,
+        'country': val.country?.country_name ? '',
+        'ror': val.ror ? '',
+        'ror_id': val.ror_id ? '',
+      }
+      cleaned_data.push(new_val)
+    return cleaned_data
+
   if typeof str is 'string' and str.length is 9 and rec = jct_institution.get str
     delete rec[x] for x in ['createdAt', 'created_date', '_id', 'description', 'values', 'wid']
     return total: 1, data: [rec]
@@ -206,7 +237,7 @@ API.service.jct.suggest.institution = (str, from, size) ->
     q.from = from if from?
     if str
       str = _jct_clean(str).replace(/the /gi,'')
-      qry = (if str.indexOf(' ') is -1 then 'id:' + str + '* OR ' else '') + '(title:' + str.replace(/ /g,' AND title:') + '*) OR (alternate:' + str.replace(/ /g,' AND alternate:') + '*) OR (description:' + str.replace(/ /g,' AND description:') + '*) OR (values:' + str.replace(/ /g,' AND values:') + '*)'
+      qry = (if str.indexOf(' ') is -1 then 'id:' + str + '* OR ' else '') + '(title:' + str.replace(/ /g,' AND title:') + '*) OR (aliases:' + str.replace(/ /g,' AND aliases:') + '*) OR (labels.label:' + str.replace(/ /g,' AND labels.label:') + '*)'
       q.query.filtered.query.query_string = {query: qry}
     else
       q.query.filtered.query.match_all = {}
@@ -219,13 +250,14 @@ API.service.jct.suggest.institution = (str, from, size) ->
       if str
         if rec._source.title.toLowerCase().indexOf('universit') isnt -1
           unis.push rec._source
-        else if _jct_clean(rec._source.title).replace('the ','').replace('university ','').replace('of ','').startsWith(str.replace('the ','').replace('university ','').replace('of ',''))
+        else if rec._source.title.replace('the ','').replace('university ','').replace('of ','').startsWith(str.replace('the ','').replace('university ','').replace('of ',''))
           starts.push rec._source
-        else if str.indexOf(' ') is -1 or unidecode(str) isnt str # allow matches on more random characters that may be matching elsewhere in the data but not in the actual title
+        else # add to extra
           extra.push rec._source
       else
         extra.push rec._source
-    ret = total: res?.hits?.total ? 0, data: _.union unis.sort((a, b) -> return a.title.length - b.title.length), starts.sort((a, b) -> return a.title.length - b.title.length), extra.sort((a, b) -> return a.title.length - b.title.length)
+    data = _.union unis.sort((a, b) -> return a.title.length - b.title.length), starts.sort((a, b) -> return a.title.length - b.title.length), extra.sort((a, b) -> return a.title.length - b.title.length)
+    ret = total: res?.hits?.total ? 0, data: _cleanup_data(data)
   
     if ret.data.length < 10
       seen = []
@@ -249,9 +281,9 @@ API.service.jct.suggest.institution = (str, from, size) ->
             if str
               if rc.title.toLowerCase().indexOf('universit') isnt -1
                 unis.push rc
-              else if _jct_clean(rc.title).replace('the ','').replace('university ','').replace('of ','').startsWith(str.replace('the ','').replace('university ','').replace('of ',''))
+              else if rc.title.replace('the ','').replace('university ','').replace('of ','').startsWith(str.replace('the ','').replace('university ','').replace('of ',''))
                 starts.push rc
-              else if rec._source.ror.indexOf(str) is 0 and unidecode(str) isnt str # allow matches on more random characters that may be matching elsewhere in the data but not in the actual title
+              else # add to extra
                 extra.push rc
             else
               extra.push rc
@@ -280,7 +312,7 @@ API.service.jct.suggest.journal = (str, from, size) ->
   starts = []
   extra = []
   for rec in res?.hits?.hits ? []
-    if not str or JSON.stringify(rec._source.issn).indexOf(str) isnt -1 or _jct_clean(rec._source.title).startsWith(str)
+    if not str or JSON.stringify(rec._source.issn).indexOf(str) isnt -1 or rec._source.title.startsWith(str)
       starts.push rec._source
     else
       extra.push rec._source
@@ -1162,8 +1194,6 @@ API.service.jct.funders = (id, refresh) ->
         rec.notes ?= []
         rec.notes.push rec.launch
       try rec.id = rec.funder.toLowerCase().replace(/[^a-z0-9]/g,'')
-      console.log(JSON.stringify(rec))
-      console.log('-')
       _funders.push(rec) if rec.id?
     
   if id?
