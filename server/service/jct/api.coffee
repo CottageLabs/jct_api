@@ -1187,7 +1187,7 @@ API.service.jct.funders = (id, refresh) ->
           rec.notes ?= []
           rec.notes.push rec.retention.split('Note:')[1].replace(')','').trim()
           rec.retention = rec.retention.split('Note:')[0].replace('(','').trim()
-        rec.retentionAt = moment('01012021','DDMMYYYY').valueOf() if rec.retention.toLowerCase().indexOf('early adopter') isnt -1
+        rec.retentionAt = moment('01012021','DDMMYYYY').valueOf() if rec.retention.toLowerCase().indexOf('adopted') isnt -1
       try rec.startAt = moment(rec.launch, 'Do MMMM YYYY').valueOf()
       delete rec.startAt if JSON.stringify(rec.startAt) is 'null'
       if not rec.startAt? and rec.launch?
