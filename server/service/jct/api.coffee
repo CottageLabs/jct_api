@@ -59,6 +59,7 @@ jct_compliance = new API.collection {index:index_name, type:"compliance"}
 jct_unknown = new API.collection {index:index_name, type:"unknown"}
 jct_funder_config = new API.collection {index:index_name, type:"funder_config"}
 jct_funder_language = new API.collection {index:index_name, type:"funder_language"}
+jct_journal_autocomplete = new API.collection {index:index_name, type: "jac"}
 
 # define endpoints that the JCT requires (to be served at a dedicated domain)
 API.add 'service/jct', get: () -> return 'cOAlition S Journal Checker Tool. Service provided by Cottage Labs LLP. Contact us@cottagelabs.com'
@@ -289,6 +290,66 @@ API.service.jct.suggest.institution = (str, from, size) ->
               extra.push rc
         ret.data = _.union ret.data, _.union unis.sort((a, b) -> return a.title.length - b.title.length), starts.sort((a, b) -> return a.title.length - b.title.length), extra.sort((a, b) -> return a.title.length - b.title.length)
     return ret
+
+
+API.service.jct.suggest.jac = (str, from, size) ->
+  if !str
+    return total: 0, data: []
+  if !size
+    size = 10
+  str = str.toLowerCase().trim()
+
+  # {"match" : {"index.issn" : str}},
+#  {
+#            "filter" : {"term" : {"index.issn.exact" : str}},
+#            "weight" : 20
+#          },
+#          {
+#            "filter" : {"term" : {"index.issn.exact" : str}},
+#            "weight" : 15
+#          },
+  q = {
+    "query": {
+      "function_score" : {
+        "query" : {
+          "bool" : {
+            "should" : [
+              {"match" : {"index.title" : str}},
+              {"match" : {"index.alts" : str}}
+            ]
+          }
+        },
+        "functions" : [
+          {
+            "filter" : {"term" : {"index.title.exact" : str}},
+            "weight" : 10
+          },
+          {
+            "filter" : {"term" : {"index.alts.exact" : str}},
+            "weight" : 9
+          },
+          {
+            "filter" : {"prefix" : {"index.title.exact" : str}},
+            "weight" : 5
+          },
+          {
+            "filter" : {"prefix" : {"index.alts.exact" : str}},
+            "weight" : 4
+          }
+        ]
+      }
+    }
+    "size" : size
+  }
+  console.log(JSON.stringify(q))
+  res = jct_journal_autocomplete.search q
+  data = []
+  for r in res?.hits?.hits ? []
+    rec = r._source
+    rec.id = rec.issns[0]
+    data.push(rec)
+  return total: res?.hits?.total ? 0, data: data
+
 
 API.service.jct.suggest.journal = (str, from, size) ->
   q = {query: {filtered: {query: {query_string: {query: 'issn:* AND NOT discontinued:true AND NOT dois:0'}}, filter: {bool: {should: []}}}}, size: size, _source: {includes: ['title','issn','publisher','src']}}
