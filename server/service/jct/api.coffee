@@ -60,6 +60,11 @@ jct_unknown = new API.collection {index:index_name, type:"unknown"}
 jct_funder_config = new API.collection {index:index_name, type:"funder_config"}
 jct_funder_language = new API.collection {index:index_name, type:"funder_language"}
 
+# Institution autocomplete endpoint talks to an alias of the name `[index_name]_iac` which points to
+# the latest import of data.  Within that index there is a single type `iac` which is the
+# one that contains the institution autocomplete data
+jct_institution_autocomplete = new API.collection {index:index_name + "_iac", type: "iac"}
+
 # define endpoints that the JCT requires (to be served at a dedicated domain)
 API.add 'service/jct', get: () -> return 'cOAlition S Journal Checker Tool. Service provided by Cottage Labs LLP. Contact us@cottagelabs.com'
 
@@ -215,6 +220,75 @@ API.service.jct.suggest.funder = (str, from, size) ->
     res.push({title: f.funder, id: f.id}) if matches
   return total: res.length, data: res
 
+API.service.jct.suggest.iac = (str, from, size) ->
+  _gather_rec = (data) ->
+    rec = {
+      'id': data.ror,
+      'title': data.title,
+      'country': data.country ? '',
+      'ror': data.ror
+    }
+    return rec
+
+  if !str
+    return total: 0, data: []
+  if !size
+    size = 10
+  str = str.toLowerCase().trim()
+
+  q = {
+    "query": {
+      "function_score" : {
+        "query" : {
+          "bool" : {
+            "should" : [
+              {"prefix" : {"index.title.exact" : str}},
+              {"prefix" : {"index.aliases.exact" : str}},
+              {"prefix" : {"index.ror.exact" : str}},
+              {"match" : {"index.title" : str}},
+              {"match" : {"index.alts" : str}},
+              {"match" : {"index.ror" : str}},
+              {"match" : {"index.acronyms.exact" : str}}
+            ]
+          }
+        },
+        "functions" : [
+          {
+            "filter" : {"term" : {"index.ror.exact" : str}},
+            "weight" : 25
+          },
+          {
+            "filter" : {"term" : {"index.title.exact" : str}},
+            "weight" : 20
+          },
+          {
+            "filter" : {"term" : {"index.aliases.exact" : str}},
+            "weight" : 15
+          },
+          {
+            "filter" : {"term" : {"index.acronyms.exact" : str}},
+            "weight" : 10
+          },
+          {
+            "filter" : {"prefix" : {"index.title.exact" : str}},
+            "weight" : 5
+          },
+          {
+            "filter" : {"prefix" : {"index.aliases.exact" : str}},
+            "weight" : 4
+          }
+        ]
+      }
+    }
+    "size" : size
+  }
+  res = jct_institution_autocomplete.search q
+  data = []
+  for r in res?.hits?.hits ? []
+    rec = _gather_rec(r._source)
+    data.push(rec)
+  return total: res?.hits?.total ? 0, data: data
+
 API.service.jct.suggest.institution = (str, from, size) ->
   _cleanup_data = (data) ->
     cleaned_data = []
@@ -258,7 +332,7 @@ API.service.jct.suggest.institution = (str, from, size) ->
         extra.push rec._source
     data = _.union unis.sort((a, b) -> return a.title.length - b.title.length), starts.sort((a, b) -> return a.title.length - b.title.length), extra.sort((a, b) -> return a.title.length - b.title.length)
     ret = total: res?.hits?.total ? 0, data: _cleanup_data(data)
-  
+
     if ret.data.length < 10
       seen = []
       seen.push(sr.id) for sr in ret.data
