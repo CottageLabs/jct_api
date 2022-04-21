@@ -1252,14 +1252,16 @@ API.service.jct.journals.import = (refresh) ->
           Meteor.setTimeout (() -> future.return()), 10000
           future.wait()
           removed = true
-        console.log 'Importing crossref ' + counter
         jct_journal.insert batch
         batch = []
+      console.log 'Importing crossref ' + counter
       try
         url = 'https://api.crossref.org/journals?offset=' + counter + '&rows=' + 1000
         console.log 'getting from crossref journals ' + url
         res = HTTP.call 'GET', url, {headers: {'User-Agent': 'Journal Checker Tool; mailto: jct@cottagelabs.zendesk.com'}}
-        total = res.data.message['total-results'] if total is 0
+        if total is 0
+          total = res.data.message['total-results']
+          total = 100000 if total > 100000
         for rec in res.data.message.items
           if rec.ISSN and rec.ISSN.length and typeof rec.ISSN[0] is 'string'
             rec.crossref = true
@@ -1289,7 +1291,7 @@ API.service.jct.journals.import = (refresh) ->
       jct_journal.insert batch
       batch = []
     if error_count >= 10
-      console.log 'Crossref import had ' + error_count + ' errors. Backing off. Imported ' + batch.length + ' of ' + total + ' records.'
+      console.log 'Crossref import had ' + error_count + ' errors. Backing off.'
 
     # then load the DOAJ data from the file (crossref takes priority because it has better metadata for spotting discontinuations)
     # only about 20% of the ~15k are not already in crossref, so do updates then bulk load the new ones
