@@ -225,7 +225,7 @@ API.service.jct.suggest.funder = (str, from, size) ->
     res.push({title: f.funder, id: f.id}) if matches
   return total: res.length, data: res
 
-API.service.jct.suggest.iac = (str, from, size) ->
+API.service.jct.suggest.institution = (str, from, size) ->
   _gather_rec = (data) ->
     rec = {
       'id': data.ror,
@@ -293,7 +293,7 @@ API.service.jct.suggest.iac = (str, from, size) ->
     data.push(rec)
   return total: res?.hits?.total ? 0, data: data
 
-#API.service.jct.suggest.institution = (str, from, size) ->
+#API.service.jct.suggest.institution_old = (str, from, size) ->
 #  _cleanup_data = (data) ->
 #    cleaned_data = []
 #    for val in data
@@ -369,7 +369,7 @@ API.service.jct.suggest.iac = (str, from, size) ->
 #    return ret
 
 
-API.service.jct.suggest.jac = (str, from, size) ->
+API.service.jct.suggest.journal = (str, from, size) ->
   if !str
     return total: 0, data: []
   if !size
@@ -431,7 +431,7 @@ API.service.jct.suggest.jac = (str, from, size) ->
 
 # This is the previous implementation of the journal autosuggest.  This has since been replaced by the
 # above function which uses ES ranking/boosting to achieve better results
-#API.service.jct.suggest.journal = (str, from, size) ->
+#API.service.jct.suggest.journal_old = (str, from, size) ->
 #  q = {query: {filtered: {query: {query_string: {query: 'issn:* AND NOT discontinued:true AND NOT dois:0'}}, filter: {bool: {should: []}}}}, size: size, _source: {includes: ['title','issn','publisher','src']}}
 #  q.from = from if from?
 #  if str and str.replace(/\-/g,'').length
