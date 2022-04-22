@@ -228,6 +228,10 @@ API.service.jct.suggest.iac = (str, from, size) ->
       'country': data.country ? '',
       'ror': data.ror
     }
+    if data.acronyms? and data.acronyms
+      rec['alternate'] = data.acronyms[0]
+    else if data.aliases?  and data.aliases
+      rec['alternate'] = data.aliases[0]
     return rec
 
   if !str
@@ -246,27 +250,22 @@ API.service.jct.suggest.iac = (str, from, size) ->
               {"prefix" : {"index.aliases.exact" : str}},
               {"prefix" : {"index.ror.exact" : str}},
               {"match" : {"index.title" : str}},
-              {"match" : {"index.alts" : str}},
-              {"match" : {"index.ror" : str}},
-              {"match" : {"index.acronyms.exact" : str}}
+              {"match" : {"index.aliases" : str}},
+              {"match" : {"index.ror" : str}}
             ]
           }
         },
         "functions" : [
           {
             "filter" : {"term" : {"index.ror.exact" : str}},
-            "weight" : 25
-          },
-          {
-            "filter" : {"term" : {"index.title.exact" : str}},
             "weight" : 20
           },
           {
-            "filter" : {"term" : {"index.aliases.exact" : str}},
+            "filter" : {"term" : {"index.title.exact" : str}},
             "weight" : 15
           },
           {
-            "filter" : {"term" : {"index.acronyms.exact" : str}},
+            "filter" : {"term" : {"index.aliases.exact" : str}},
             "weight" : 10
           },
           {
