@@ -60,6 +60,16 @@ jct_unknown = new API.collection {index:index_name, type:"unknown"}
 jct_funder_config = new API.collection {index:index_name, type:"funder_config"}
 jct_funder_language = new API.collection {index:index_name, type:"funder_language"}
 
+# Autocomplete endpoint talks to an alias of the name `[index_name]_jac` which points to
+# the latest import of data.  Within that index there is a single type `jac` which is the
+# one that contains the journal autocomplete data
+jct_journal_autocomplete = new API.collection {index:index_name + "_jac", type: "jac"}
+
+# Institution autocomplete endpoint talks to an alias of the name `[index_name]_iac` which points to
+# the latest import of data.  Within that index there is a single type `iac` which is the
+# one that contains the institution autocomplete data
+jct_institution_autocomplete = new API.collection {index:index_name + "_iac", type: "iac"}
+
 # define endpoints that the JCT requires (to be served at a dedicated domain)
 API.add 'service/jct', get: () -> return 'cOAlition S Journal Checker Tool. Service provided by Cottage Labs LLP. Contact us@cottagelabs.com'
 
@@ -216,108 +226,239 @@ API.service.jct.suggest.funder = (str, from, size) ->
   return total: res.length, data: res
 
 API.service.jct.suggest.institution = (str, from, size) ->
-  _cleanup_data = (data) ->
-    cleaned_data = []
-    for val in data
-      new_val = {
-        'id': val.id,
-        'title': val.title,
-        'country': val.country?.country_name ? '',
-        'ror': val.ror ? '',
-        'ror_id': val.ror_id ? '',
-      }
-      cleaned_data.push(new_val)
-    return cleaned_data
+  _gather_rec = (data) ->
+    rec = {
+      'id': data.ror,
+      'title': data.title,
+      'country': data.country ? '',
+      'ror': data.ror
+    }
+    if data.acronyms? and data.acronyms
+      rec['alternate'] = data.acronyms[0]
+    else if data.aliases?  and data.aliases
+      rec['alternate'] = data.aliases[0]
+    return rec
 
-  if typeof str is 'string' and str.length is 9 and rec = jct_institution.get str
-    delete rec[x] for x in ['createdAt', 'created_date', '_id', 'description', 'values', 'wid']
-    return total: 1, data: [rec]
-  else
-    q = {query: {filtered: {query: {}, filter: {bool: {should: []}}}}, size: size}
-    q.from = from if from?
-    if str
-      str = _jct_clean(str).replace(/the /gi,'')
-      qry = (if str.indexOf(' ') is -1 then 'id:' + str + '* OR ' else '') + '(title:' + str.replace(/ /g,' AND title:') + '*) OR (aliases:' + str.replace(/ /g,' AND aliases:') + '*) OR (labels.label:' + str.replace(/ /g,' AND labels.label:') + '*)'
-      q.query.filtered.query.query_string = {query: qry}
-    else
-      q.query.filtered.query.match_all = {}
-    res = jct_institution.search q
-    unis = []
-    starts = []
-    extra = []
-    for rec in res?.hits?.hits ? []
-      delete rec._source[x] for x in ['createdAt', 'created_date', '_id', 'description', 'values', 'wid']
-      if str
-        if rec._source.title.toLowerCase().indexOf('universit') isnt -1
-          unis.push rec._source
-        else if rec._source.title.replace('the ','').replace('university ','').replace('of ','').startsWith(str.replace('the ','').replace('university ','').replace('of ',''))
-          starts.push rec._source
-        else # add to extra
-          extra.push rec._source
-      else
-        extra.push rec._source
-    data = _.union unis.sort((a, b) -> return a.title.length - b.title.length), starts.sort((a, b) -> return a.title.length - b.title.length), extra.sort((a, b) -> return a.title.length - b.title.length)
-    ret = total: res?.hits?.total ? 0, data: _cleanup_data(data)
-  
-    if ret.data.length < 10
-      seen = []
-      seen.push(sr.id) for sr in ret.data
-      q = {query: {filtered: {query: {}, filter: {bool: {should: []}}}}, size: size}
-      q.from = from if from?
-      if str
-        str = _jct_clean(str).replace(/the /gi,'')
-        q.query.filtered.query.query_string = {query: (if str.indexOf(' ') is -1 then 'ror.exact:"' + str + '" OR ' else '') + '(institution:' + str.replace(/ /g,' AND institution:') + '*)'}
-      else
-        q.query.filtered.query.query_string = {query: 'ror:*'}
-      res = jct_agreement.search q
-      if res?.hits?.total
-        ret.total += res.hits.total
-        unis = []
-        starts = []
-        extra = []
-        for rec in res?.hits?.hits ? []
-          if rec._source.ror not in seen
-            rc = {title: rec._source.institution, id: rec._source.ror, ta: true}
-            if str
-              if rc.title.toLowerCase().indexOf('universit') isnt -1
-                unis.push rc
-              else if rc.title.replace('the ','').replace('university ','').replace('of ','').startsWith(str.replace('the ','').replace('university ','').replace('of ',''))
-                starts.push rc
-              else # add to extra
-                extra.push rc
-            else
-              extra.push rc
-        ret.data = _.union ret.data, _.union unis.sort((a, b) -> return a.title.length - b.title.length), starts.sort((a, b) -> return a.title.length - b.title.length), extra.sort((a, b) -> return a.title.length - b.title.length)
-    return ret
+  if !str
+    return total: 0, data: []
+  if !size
+    size = 10
+  str = str.toLowerCase().trim()
+
+  q = {
+    "query": {
+      "function_score" : {
+        "query" : {
+          "bool" : {
+            "should" : [
+              {"prefix" : {"index.title.exact" : str}},
+              {"prefix" : {"index.aliases.exact" : str}},
+              {"prefix" : {"index.ror.exact" : str}},
+              {"match" : {"index.title" : str}},
+              {"match" : {"index.aliases" : str}},
+              {"match" : {"index.ror" : str}}
+            ]
+          }
+        },
+        "functions" : [
+          {
+            "filter" : {"term" : {"index.ror.exact" : str}},
+            "weight" : 20
+          },
+          {
+            "filter" : {"term" : {"index.title.exact" : str}},
+            "weight" : 15
+          },
+          {
+            "filter" : {"term" : {"index.aliases.exact" : str}},
+            "weight" : 10
+          },
+          {
+            "filter" : {"prefix" : {"index.title.exact" : str}},
+            "weight" : 5
+          },
+          {
+            "filter" : {"prefix" : {"index.aliases.exact" : str}},
+            "weight" : 4
+          }
+        ]
+      }
+    }
+    "size" : size
+  }
+  res = jct_institution_autocomplete.search q
+  data = []
+  for r in res?.hits?.hits ? []
+    rec = _gather_rec(r._source)
+    data.push(rec)
+  return total: res?.hits?.total ? 0, data: data
+
+#API.service.jct.suggest.institution_old = (str, from, size) ->
+#  _cleanup_data = (data) ->
+#    cleaned_data = []
+#    for val in data
+#      new_val = {
+#        'id': val.id,
+#        'title': val.title,
+#        'country': val.country?.country_name ? '',
+#        'ror': val.ror ? '',
+#        'ror_id': val.ror_id ? '',
+#      }
+#      cleaned_data.push(new_val)
+#    return cleaned_data
+#
+#  if typeof str is 'string' and str.length is 9 and rec = jct_institution.get str
+#    delete rec[x] for x in ['createdAt', 'created_date', '_id', 'description', 'values', 'wid']
+#    return total: 1, data: [rec]
+#  else
+#    q = {query: {filtered: {query: {}, filter: {bool: {should: []}}}}, size: size}
+#    q.from = from if from?
+#    if str
+#      str = _jct_clean(str).replace(/the /gi,'')
+#      qry = (if str.indexOf(' ') is -1 then 'id:' + str + '* OR ' else '') + '(title:' + str.replace(/ /g,' AND title:') + '*) OR (aliases:' + str.replace(/ /g,' AND aliases:') + '*) OR (labels.label:' + str.replace(/ /g,' AND labels.label:') + '*)'
+#      q.query.filtered.query.query_string = {query: qry}
+#    else
+#      q.query.filtered.query.match_all = {}
+#    res = jct_institution.search q
+#    unis = []
+#    starts = []
+#    extra = []
+#    for rec in res?.hits?.hits ? []
+#      delete rec._source[x] for x in ['createdAt', 'created_date', '_id', 'description', 'values', 'wid']
+#      if str
+#        if rec._source.title.toLowerCase().indexOf('universit') isnt -1
+#          unis.push rec._source
+#        else if rec._source.title.replace('the ','').replace('university ','').replace('of ','').startsWith(str.replace('the ','').replace('university ','').replace('of ',''))
+#          starts.push rec._source
+#        else # add to extra
+#          extra.push rec._source
+#      else
+#        extra.push rec._source
+#    data = _.union unis.sort((a, b) -> return a.title.length - b.title.length), starts.sort((a, b) -> return a.title.length - b.title.length), extra.sort((a, b) -> return a.title.length - b.title.length)
+#    ret = total: res?.hits?.total ? 0, data: _cleanup_data(data)
+#
+#    if ret.data.length < 10
+#      seen = []
+#      seen.push(sr.id) for sr in ret.data
+#      q = {query: {filtered: {query: {}, filter: {bool: {should: []}}}}, size: size}
+#      q.from = from if from?
+#      if str
+#        str = _jct_clean(str).replace(/the /gi,'')
+#        q.query.filtered.query.query_string = {query: (if str.indexOf(' ') is -1 then 'ror.exact:"' + str + '" OR ' else '') + '(institution:' + str.replace(/ /g,' AND institution:') + '*)'}
+#      else
+#        q.query.filtered.query.query_string = {query: 'ror:*'}
+#      res = jct_agreement.search q
+#      if res?.hits?.total
+#        ret.total += res.hits.total
+#        unis = []
+#        starts = []
+#        extra = []
+#        for rec in res?.hits?.hits ? []
+#          if rec._source.ror not in seen
+#            rc = {title: rec._source.institution, id: rec._source.ror, ta: true}
+#            if str
+#              if rc.title.toLowerCase().indexOf('universit') isnt -1
+#                unis.push rc
+#              else if rc.title.replace('the ','').replace('university ','').replace('of ','').startsWith(str.replace('the ','').replace('university ','').replace('of ',''))
+#                starts.push rc
+#              else # add to extra
+#                extra.push rc
+#            else
+#              extra.push rc
+#        ret.data = _.union ret.data, _.union unis.sort((a, b) -> return a.title.length - b.title.length), starts.sort((a, b) -> return a.title.length - b.title.length), extra.sort((a, b) -> return a.title.length - b.title.length)
+#    return ret
+
 
 API.service.jct.suggest.journal = (str, from, size) ->
-  q = {query: {filtered: {query: {query_string: {query: 'issn:* AND NOT discontinued:true AND NOT dois:0'}}, filter: {bool: {should: []}}}}, size: size, _source: {includes: ['title','issn','publisher','src']}}
-  q.from = from if from?
-  if str and str.replace(/\-/g,'').length
-    if str.indexOf(' ') is -1
-      if str.indexOf('-') isnt -1 and str.length is 9
-        q.query.filtered.query.query_string.query = 'issn.exact:"' + str + '" AND NOT discontinued:true AND NOT dois:0'
-      else
-        q.query.filtered.query.query_string.query = 'NOT discontinued:true AND NOT dois:0 AND ('
-        if str.indexOf('-') isnt -1
-          q.query.filtered.query.query_string.query += '(issn:"' + str.replace('-','" AND issn:') + '*)'
-        else
-          q.query.filtered.query.query_string.query += 'issn:' + str + '*'
-        q.query.filtered.query.query_string.query += ' OR title:"' + str + '" OR title:' + str + '* OR title:' + str + '~)'
-    else
-      str = _jct_clean str
-      q.query.filtered.query.query_string.query = 'issn:* AND NOT discontinued:true AND NOT dois:0 AND (title:"' + str + '" OR '
-      q.query.filtered.query.query_string.query += (if str.indexOf(' ') is -1 then 'title:' + str + '*' else '(title:' + str.replace(/ /g,'~ AND title:') + '*)') + ')'
-  res = jct_journal.search q
-  starts = []
-  extra = []
-  for rec in res?.hits?.hits ? []
-    if not str or JSON.stringify(rec._source.issn).indexOf(str) isnt -1 or rec._source.title.startsWith(str)
-      starts.push rec._source
-    else
-      extra.push rec._source
-    rec._source.id = rec._source.issn[0]
-  return total: res?.hits?.total ? 0, data: _.union starts.sort((a, b) -> return a.title.length - b.title.length), extra.sort((a, b) -> return a.title.length - b.title.length)
+  if !str
+    return total: 0, data: []
+  if !size
+    size = 10
+  str = str.toLowerCase().trim()
+
+  q = {
+    "query": {
+      "function_score" : {
+        "query" : {
+          "bool" : {
+            "should" : [
+              {"prefix" : {"index.title.exact" : str}},
+              {"prefix" : {"index.alts.exact" : str}},
+              {"prefix" : {"index.issns.exact" : str}},
+              {"match" : {"index.title" : str}},
+              {"match" : {"index.alts" : str}},
+              {"match" : {"index.issns" : str}}
+            ]
+          }
+        },
+        "functions" : [
+          {
+            "filter" : {"term" : {"index.issns.exact" : str}},
+            "weight" : 20
+          },
+          {
+            "filter" : {"prefix" : {"index.issns.exact" : str}},
+            "weight" : 15
+          },
+          {
+            "filter" : {"term" : {"index.title.exact" : str}},
+            "weight" : 15
+          },
+          {
+            "filter" : {"term" : {"index.alts.exact" : str}},
+            "weight" : 10
+          },
+          {
+            "filter" : {"prefix" : {"index.title.exact" : str}},
+            "weight" : 5
+          },
+          {
+            "filter" : {"prefix" : {"index.alts.exact" : str}},
+            "weight" : 4
+          }
+        ]
+      }
+    }
+    "size" : size
+  }
+  res = jct_journal_autocomplete.search q
+  data = []
+  for r in res?.hits?.hits ? []
+    rec = r._source
+    rec.id = rec.issns[0]
+    data.push(rec)
+  return total: res?.hits?.total ? 0, data: data
+
+# This is the previous implementation of the journal autosuggest.  This has since been replaced by the
+# above function which uses ES ranking/boosting to achieve better results
+#API.service.jct.suggest.journal_old = (str, from, size) ->
+#  q = {query: {filtered: {query: {query_string: {query: 'issn:* AND NOT discontinued:true AND NOT dois:0'}}, filter: {bool: {should: []}}}}, size: size, _source: {includes: ['title','issn','publisher','src']}}
+#  q.from = from if from?
+#  if str and str.replace(/\-/g,'').length
+#    if str.indexOf(' ') is -1
+#      if str.indexOf('-') isnt -1 and str.length is 9
+#        q.query.filtered.query.query_string.query = 'issn.exact:"' + str + '" AND NOT discontinued:true AND NOT dois:0'
+#      else
+#        q.query.filtered.query.query_string.query = 'NOT discontinued:true AND NOT dois:0 AND ('
+#        if str.indexOf('-') isnt -1
+#          q.query.filtered.query.query_string.query += '(issn:"' + str.replace('-','" AND issn:') + '*)'
+#        else
+#          q.query.filtered.query.query_string.query += 'issn:' + str + '*'
+#        q.query.filtered.query.query_string.query += ' OR title:"' + str + '" OR title:' + str + '* OR title:' + str + '~)'
+#    else
+#      str = _jct_clean str
+#      q.query.filtered.query.query_string.query = 'issn:* AND NOT discontinued:true AND NOT dois:0 AND (title:"' + str + '" OR '
+#      q.query.filtered.query.query_string.query += (if str.indexOf(' ') is -1 then 'title:' + str + '*' else '(title:' + str.replace(/ /g,'~ AND title:') + '*)') + ')'
+#  res = jct_journal.search q
+#  starts = []
+#  extra = []
+#  for rec in res?.hits?.hits ? []
+#    if not str or JSON.stringify(rec._source.issn).indexOf(str) isnt -1 or rec._source.title.startsWith(str)
+#      starts.push rec._source
+#    else
+#      extra.push rec._source
+#    rec._source.id = rec._source.issn[0]
+#  return total: res?.hits?.total ? 0, data: _.union starts.sort((a, b) -> return a.title.length - b.title.length), extra.sort((a, b) -> return a.title.length - b.title.length)
 
 
 API.service.jct.calculate = (params={}, refresh) ->
